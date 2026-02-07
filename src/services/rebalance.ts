@@ -229,36 +229,33 @@ export class RebalanceService {
       const sdk = this.sdkService.getSdk();
       const keypair = this.sdkService.getKeypair();
       const suiClient = this.sdkService.getSuiClient();
-
-      // Get position details to get pool and coin types
       const ownerAddress = this.sdkService.getAddress();
-      const positions = await this.monitorService.getPositions(ownerAddress);
-      const position = positions.find(p => p.positionId === positionId);
-
-      if (!position) {
-        throw new Error(`Position ${positionId} not found`);
-      }
-
-      logger.info('Building remove liquidity transaction');
-
-      // Build remove liquidity transaction payload
-      // Type-safe parameters for SDK call
-      const params: RemoveLiquidityParams = {
-        pool_id: position.poolAddress,
-        pos_id: positionId,
-        delta_liquidity: liquidity,
-        min_amount_a: '0', // Accept any amount due to slippage
-        min_amount_b: '0',
-        coinTypeA: position.tokenA,
-        coinTypeB: position.tokenB,
-        collect_fee: true, // Collect fees when removing liquidity
-        rewarder_coin_types: [], // No rewards for simplicity
-      };
 
       // Execute remove liquidity with retry logic
       logger.info('Executing remove liquidity transaction');
       const result = await this.retryTransaction(
         async () => {
+          // Refetch position details on each retry to get latest state
+          const positions = await this.monitorService.getPositions(ownerAddress);
+          const position = positions.find(p => p.positionId === positionId);
+
+          if (!position) {
+            throw new Error(`Position ${positionId} not found`);
+          }
+
+          // Build remove liquidity transaction payload with fresh position data
+          const params: RemoveLiquidityParams = {
+            pool_id: position.poolAddress,
+            pos_id: positionId,
+            delta_liquidity: liquidity,
+            min_amount_a: '0', // Accept any amount due to slippage
+            min_amount_b: '0',
+            coinTypeA: position.tokenA,
+            coinTypeB: position.tokenB,
+            collect_fee: true, // Collect fees when removing liquidity
+            rewarder_coin_types: [], // No rewards for simplicity
+          };
+
           const removeLiquidityPayload = await sdk.Position.removeLiquidityTransactionPayload(params as any);
           
           const txResult = await suiClient.signAndExecuteTransaction({
@@ -330,11 +327,14 @@ export class RebalanceService {
         lastError = error instanceof Error ? error : new Error(errorMsg);
         
         // Check if this is a retryable error
+        // Stale object errors: Object version mismatch
         const isStaleObject = errorMsg.includes('is not available for consumption') || 
-                             errorMsg.includes('version') || 
-                             errorMsg.includes('Version');
-        const isPendingTx = errorMsg.includes('pending') || 
-                           errorMsg.includes('above threshold');
+                             (errorMsg.includes('Version') && errorMsg.includes('Digest')) ||
+                             errorMsg.includes('current version:');
+        
+        // Pending transaction errors: Transaction still in progress
+        const isPendingTx = (errorMsg.includes('pending') && errorMsg.includes('seconds old')) || 
+                           (errorMsg.includes('pending') && errorMsg.includes('above threshold'));
         
         if (!isStaleObject && !isPendingTx) {
           // Non-retryable error, throw immediately
@@ -350,7 +350,8 @@ export class RebalanceService {
       }
     }
     
-    throw lastError;
+    // Should never reach here unless all retries failed
+    throw lastError || new Error(`All retry attempts failed for ${operationName} with unknown error`);
   }
 
   private async addLiquidity(
