@@ -77,5 +77,3 @@ export function loadConfig(): BotConfig {
     verboseLogs: getEnvBoolean('VERBOSE_LOGS', false),
   };
 }
-
-export const config = loadConfig();

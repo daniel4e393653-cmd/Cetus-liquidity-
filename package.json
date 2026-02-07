@@ -7,7 +7,10 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "dev": "ts-node src/index.ts",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage"
   },
   "keywords": [
     "cetus",
@@ -23,12 +26,16 @@
   "dependencies": {
     "@cetusprotocol/cetus-sui-clmm-sdk": "^4.0.0",
     "@mysten/sui.js": "^0.54.0",
-    "dotenv": "^16.4.5",
-    "bn.js": "^5.2.1"
+    "bn.js": "^5.2.1",
+    "dotenv": "^16.4.5"
   },
   "devDependencies": {
     "@types/bn.js": "^5.1.5",
+    "@types/dotenv": "^6.1.1",
+    "@types/jest": "^30.0.0",
     "@types/node": "^20.11.5",
+    "jest": "^30.2.0",
+    "ts-jest": "^29.4.6",
     "ts-node": "^10.9.2",
     "typescript": "^5.3.3"
   },

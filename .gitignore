@@ -34,3 +34,8 @@ Thumbs.db
 tmp/
 temp/
 *.tmp
+
+# Test coverage
+coverage/
+.nyc_output/
+*.lcov

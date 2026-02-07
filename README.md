@@ -201,6 +201,35 @@ npm run build
 npm run clean
 ```
 
+### Testing
+
+The bot includes a comprehensive test suite with 79 tests achieving ~80% code coverage.
+
+```bash
+# Run all tests
+npm test
+
+# Run tests in watch mode
+npm run test:watch
+
+# Generate coverage report
+npm run test:coverage
+```
+
+For detailed testing documentation, see [TESTING.md](./TESTING.md).
+
+#### Manual Testing
+
+You can also run a manual test script to verify the bot functionality:
+
+```bash
+# Build first
+npm run build
+
+# Run manual test
+node test-bot.js
+```
+
 ### Code Structure
 
 The bot follows a service-oriented architecture:
