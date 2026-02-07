@@ -21,16 +21,21 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "@cetusprotocol/cetus-sui-clmm-sdk": "^4.0.0",
-    "@mysten/sui.js": "^0.54.0",
+    "@cetusprotocol/cetus-sui-clmm-sdk": "^4.3.2",
+    "@mysten/bcs": "^0.11.1",
+    "@mysten/sui.js": "^0.54.1",
+    "bn.js": "^5.2.1",
     "dotenv": "^16.4.5",
-    "bn.js": "^5.2.1"
+    "tslib": "^2.8.1"
   },
   "devDependencies": {
     "@types/bn.js": "^5.1.5",
     "@types/node": "^20.11.5",
     "ts-node": "^10.9.2",
     "typescript": "^5.3.3"
+  },
+  "overrides": {
+    "@mysten/bcs": "^0.11.1"
   },
   "engines": {
     "node": ">=18.0.0"
