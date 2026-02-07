@@ -4,7 +4,7 @@
 
 The bot was experiencing transaction failures with the following error:
 ```
-MoveAbort(MoveLocation { module: ModuleId { address: 70968826ad1b4ba895753f634b0aea68d0672908ca1075a2abdf0fc6a, name: Identifier("config") }, function: 24, instruction: 8, function_name: Some("checked_package_version") }, 10)
+MoveAbort(MoveLocation { module: ModuleId { address: 0x70968826ad1b4ba895753f634b0aea68d0672908ca1075a2abdf0fc6a, name: Identifier("config") }, function: 24, instruction: 8, function_name: Some("checked_package_version") }, 10)
 ```
 
 This error indicated a **package version mismatch** between the SDK and the current Cetus protocol on-chain contracts.
