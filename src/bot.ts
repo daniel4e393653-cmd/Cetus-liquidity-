@@ -1,33 +1,37 @@
 import { CetusSDKService } from './services/sdk';
 import { PositionMonitorService } from './services/monitor';
 import { RebalanceService } from './services/rebalance';
-import { config } from './config';
+import { loadConfig, BotConfig } from './config';
 import { logger } from './utils/logger';
 
 export class CetusRebalanceBot {
   private sdkService: CetusSDKService;
   private monitorService: PositionMonitorService;
   private rebalanceService: RebalanceService;
+  private config: BotConfig;
   private isRunning: boolean = false;
   private intervalId?: NodeJS.Timeout;
 
-  constructor() {
+  constructor(config?: BotConfig) {
+    // Load config if not provided
+    this.config = config || loadConfig();
+    
     logger.info('Initializing Cetus Rebalance Bot...');
     
     // Initialize services
-    this.sdkService = new CetusSDKService(config);
-    this.monitorService = new PositionMonitorService(this.sdkService, config);
+    this.sdkService = new CetusSDKService(this.config);
+    this.monitorService = new PositionMonitorService(this.sdkService, this.config);
     this.rebalanceService = new RebalanceService(
       this.sdkService,
       this.monitorService,
-      config
+      this.config
     );
 
     logger.info('Bot initialized successfully', {
-      network: config.network,
+      network: this.config.network,
       address: this.sdkService.getAddress(),
-      poolAddress: config.poolAddress,
-      checkInterval: config.checkInterval,
+      poolAddress: this.config.poolAddress,
+      checkInterval: this.config.checkInterval,
     });
   }
 
@@ -46,9 +50,9 @@ export class CetusRebalanceBot {
     // Schedule periodic checks
     this.intervalId = setInterval(async () => {
       await this.performCheck();
-    }, config.checkInterval * 1000);
+    }, this.config.checkInterval * 1000);
 
-    logger.info(`Bot started - checking every ${config.checkInterval} seconds`);
+    logger.info(`Bot started - checking every ${this.config.checkInterval} seconds`);
   }
 
   async stop(): Promise<void> {
@@ -71,7 +75,7 @@ export class CetusRebalanceBot {
     try {
       logger.info('=== Performing position check ===');
 
-      const result = await this.rebalanceService.checkAndRebalance(config.poolAddress);
+      const result = await this.rebalanceService.checkAndRebalance(this.config.poolAddress);
 
       if (result) {
         logger.info('Rebalance executed', {
@@ -97,8 +101,8 @@ export class CetusRebalanceBot {
     return {
       running: this.isRunning,
       address: this.sdkService.getAddress(),
-      network: config.network,
-      poolAddress: config.poolAddress,
+      network: this.config.network,
+      poolAddress: this.config.poolAddress,
     };
   }
 }
