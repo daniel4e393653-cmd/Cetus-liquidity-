@@ -229,48 +229,54 @@ export class RebalanceService {
       const sdk = this.sdkService.getSdk();
       const keypair = this.sdkService.getKeypair();
       const suiClient = this.sdkService.getSuiClient();
-
-      // Get position details to get pool and coin types
       const ownerAddress = this.sdkService.getAddress();
-      const positions = await this.monitorService.getPositions(ownerAddress);
-      const position = positions.find(p => p.positionId === positionId);
 
-      if (!position) {
-        throw new Error(`Position ${positionId} not found`);
-      }
-
-      logger.info('Building remove liquidity transaction');
-
-      // Build remove liquidity transaction payload
-      // Type-safe parameters for SDK call
-      const params: RemoveLiquidityParams = {
-        pool_id: position.poolAddress,
-        pos_id: positionId,
-        delta_liquidity: liquidity,
-        min_amount_a: '0', // Accept any amount due to slippage
-        min_amount_b: '0',
-        coinTypeA: position.tokenA,
-        coinTypeB: position.tokenB,
-        collect_fee: true, // Collect fees when removing liquidity
-        rewarder_coin_types: [], // No rewards for simplicity
-      };
-      
-      const removeLiquidityPayload = await sdk.Position.removeLiquidityTransactionPayload(params as any); // Note: SDK types may vary by version
-
-      // Sign and execute the transaction
+      // Execute remove liquidity with retry logic
       logger.info('Executing remove liquidity transaction');
-      const result = await suiClient.signAndExecuteTransaction({
-        transaction: removeLiquidityPayload,
-        signer: keypair,
-        options: {
-          showEffects: true,
-          showEvents: true,
-        },
-      });
+      const result = await this.retryTransaction(
+        async () => {
+          // Refetch position details on each retry to get latest state
+          const positions = await this.monitorService.getPositions(ownerAddress);
+          const position = positions.find(p => p.positionId === positionId);
 
-      if (result.effects?.status?.status !== 'success') {
-        throw new Error(`Transaction failed: ${result.effects?.status?.error || 'Unknown error'}`);
-      }
+          if (!position) {
+            throw new Error(`Position ${positionId} not found`);
+          }
+
+          // Build remove liquidity transaction payload with fresh position data
+          const params: RemoveLiquidityParams = {
+            pool_id: position.poolAddress,
+            pos_id: positionId,
+            delta_liquidity: liquidity,
+            min_amount_a: '0', // Accept any amount due to slippage
+            min_amount_b: '0',
+            coinTypeA: position.tokenA,
+            coinTypeB: position.tokenB,
+            collect_fee: true, // Collect fees when removing liquidity
+            rewarder_coin_types: [], // No rewards for simplicity
+          };
+
+          const removeLiquidityPayload = await sdk.Position.removeLiquidityTransactionPayload(params as any);
+          
+          const txResult = await suiClient.signAndExecuteTransaction({
+            transaction: removeLiquidityPayload,
+            signer: keypair,
+            options: {
+              showEffects: true,
+              showEvents: true,
+            },
+          });
+
+          if (txResult.effects?.status?.status !== 'success') {
+            throw new Error(`Transaction failed: ${txResult.effects?.status?.error || 'Unknown error'}`);
+          }
+
+          return txResult;
+        },
+        'remove liquidity',
+        3,
+        2000
+      );
 
       logger.info('Liquidity removed successfully', {
         digest: result.digest,
@@ -293,6 +299,59 @@ export class RebalanceService {
       
       throw error;
     }
+  }
+
+  /**
+   * Helper function to retry a transaction with exponential backoff.
+   * Handles stale object references and pending transactions.
+   */
+  private async retryTransaction<T>(
+    operation: () => Promise<T>,
+    operationName: string,
+    maxRetries: number = 3,
+    initialDelayMs: number = 2000
+  ): Promise<T> {
+    let lastError: Error | undefined;
+    
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        if (attempt > 0) {
+          const delay = initialDelayMs * Math.pow(2, attempt - 1);
+          logger.info(`Retry attempt ${attempt + 1}/${maxRetries} for ${operationName} after ${delay}ms delay`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+        }
+        
+        return await operation();
+      } catch (error) {
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        lastError = error instanceof Error ? error : new Error(errorMsg);
+        
+        // Check if this is a retryable error
+        // Stale object errors: Object version mismatch
+        const isStaleObject = errorMsg.includes('is not available for consumption') || 
+                             (errorMsg.includes('Version') && errorMsg.includes('Digest')) ||
+                             errorMsg.includes('current version:');
+        
+        // Pending transaction errors: Transaction still in progress
+        const isPendingTx = (errorMsg.includes('pending') && errorMsg.includes('seconds old')) || 
+                           (errorMsg.includes('pending') && errorMsg.includes('above threshold'));
+        
+        if (!isStaleObject && !isPendingTx) {
+          // Non-retryable error, throw immediately
+          logger.error(`Non-retryable error in ${operationName}: ${errorMsg}`);
+          throw error;
+        }
+        
+        if (attempt < maxRetries - 1) {
+          logger.warn(`Retryable error in ${operationName} (attempt ${attempt + 1}/${maxRetries}): ${errorMsg}`);
+        } else {
+          logger.error(`Max retries (${maxRetries}) exceeded for ${operationName}`);
+        }
+      }
+    }
+    
+    // Should never reach here unless all retries failed
+    throw lastError || new Error(`All retry attempts failed for ${operationName} with unknown error`);
   }
 
   private async addLiquidity(
@@ -369,23 +428,32 @@ export class RebalanceService {
         coinTypeB: poolInfo.coinTypeB,
       };
       
-      const openPositionPayload = await sdk.Position.openPositionTransactionPayload(openParams as any); // Note: SDK types may vary by version
-
-      // First, open the position
+      // First, open the position with retry logic
       logger.info('Opening position...');
-      const openResult = await suiClient.signAndExecuteTransaction({
-        transaction: openPositionPayload,
-        signer: keypair,
-        options: {
-          showEffects: true,
-          showEvents: true,
-          showObjectChanges: true,
-        },
-      });
+      const openResult = await this.retryTransaction(
+        async () => {
+          const openPositionPayload = await sdk.Position.openPositionTransactionPayload(openParams as any);
+          
+          const result = await suiClient.signAndExecuteTransaction({
+            transaction: openPositionPayload,
+            signer: keypair,
+            options: {
+              showEffects: true,
+              showEvents: true,
+              showObjectChanges: true,
+            },
+          });
 
-      if (openResult.effects?.status?.status !== 'success') {
-        throw new Error(`Failed to open position: ${openResult.effects?.status?.error || 'Unknown error'}`);
-      }
+          if (result.effects?.status?.status !== 'success') {
+            throw new Error(`Failed to open position: ${result.effects?.status?.error || 'Unknown error'}`);
+          }
+
+          return result;
+        },
+        'open position',
+        3,
+        2000
+      );
 
       logger.info('Position opened successfully', {
         digest: openResult.digest,
@@ -432,32 +500,42 @@ export class RebalanceService {
           rewarder_coin_types: [],
         };
         
-        // Get current pool state for gas estimation if needed
-        const pool = await sdk.Pool.getPool(poolInfo.poolAddress);
-        const currentSqrtPrice = new BN(pool.current_sqrt_price);
-        
-        // Use createAddLiquidityFixTokenPayload which handles liquidity calculation
-        const addLiquidityPayload = await sdk.Position.createAddLiquidityFixTokenPayload(
-          addLiquidityParams as any, // SDK types may not match exactly, but our interface ensures correctness
-          {
-            slippage: this.config.maxSlippage,
-            curSqrtPrice: currentSqrtPrice,
-          }
-        );
-        
+        // Add liquidity with retry logic
         logger.info('Executing add liquidity transaction...');
-        const addResult = await suiClient.signAndExecuteTransaction({
-          transaction: addLiquidityPayload,
-          signer: keypair,
-          options: {
-            showEffects: true,
-            showEvents: true,
+        const addResult = await this.retryTransaction(
+          async () => {
+            // Refetch pool state on each retry to get latest version
+            const pool = await sdk.Pool.getPool(poolInfo.poolAddress);
+            const currentSqrtPrice = new BN(pool.current_sqrt_price);
+            
+            // Use createAddLiquidityFixTokenPayload which handles liquidity calculation
+            const addLiquidityPayload = await sdk.Position.createAddLiquidityFixTokenPayload(
+              addLiquidityParams as any,
+              {
+                slippage: this.config.maxSlippage,
+                curSqrtPrice: currentSqrtPrice,
+              }
+            );
+            
+            const result = await suiClient.signAndExecuteTransaction({
+              transaction: addLiquidityPayload,
+              signer: keypair,
+              options: {
+                showEffects: true,
+                showEvents: true,
+              },
+            });
+            
+            if (result.effects?.status?.status !== 'success') {
+              throw new Error(`Failed to add liquidity: ${result.effects?.status?.error || 'Unknown error'}`);
+            }
+            
+            return result;
           },
-        });
-        
-        if (addResult.effects?.status?.status !== 'success') {
-          throw new Error(`Failed to add liquidity: ${addResult.effects?.status?.error || 'Unknown error'}`);
-        }
+          'add liquidity',
+          3,
+          2000
+        );
         
         logger.info('Liquidity added successfully', {
           digest: addResult.digest,
