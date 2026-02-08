@@ -669,25 +669,25 @@ export class RebalanceService {
               const swapDeltaA = BigInt(postSwapBalA.totalBalance) - BigInt(preSwapBalA.totalBalance);
               const swapDeltaB = BigInt(postSwapBalB.totalBalance) - BigInt(preSwapBalB.totalBalance);
 
-              let adjA = preSwapA + swapDeltaA;
-              let adjB = preSwapB + swapDeltaB;
+              let adjustedAmountA = preSwapA + swapDeltaA;
+              let adjustedAmountB = preSwapB + swapDeltaB;
 
               // Reserve gas when SUI is one of the tokens
               if (isSuiA) {
                 const walletA = BigInt(postSwapBalA.totalBalance);
                 const maxUsableA = walletA > SUI_GAS_RESERVE ? walletA - SUI_GAS_RESERVE : 0n;
-                if (adjA > maxUsableA) adjA = maxUsableA;
+                if (adjustedAmountA > maxUsableA) adjustedAmountA = maxUsableA;
               }
               if (isSuiB) {
                 const walletB = BigInt(postSwapBalB.totalBalance);
                 const maxUsableB = walletB > SUI_GAS_RESERVE ? walletB - SUI_GAS_RESERVE : 0n;
-                if (adjB > maxUsableB) adjB = maxUsableB;
+                if (adjustedAmountB > maxUsableB) adjustedAmountB = maxUsableB;
               }
 
-              amountA = (adjA > 0n ? adjA : 0n).toString();
-              amountB = (adjB > 0n ? adjB : 0n).toString();
+              amountA = (adjustedAmountA > 0n ? adjustedAmountA : 0n).toString();
+              amountB = (adjustedAmountB > 0n ? adjustedAmountB : 0n).toString();
 
-              logger.info('Balances after swap (freed amounts only)', { amountA, amountB });
+              logger.info('Post-swap amounts (removed position liquidity adjusted by swap deltas)', { amountA, amountB });
             } catch (swapError) {
               const swapMsg = swapError instanceof Error ? swapError.message : String(swapError);
               logger.warn(
