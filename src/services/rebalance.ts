@@ -92,9 +92,9 @@ export class RebalanceService {
       let positionsNeedingRebalance: PositionInfo[];
       if (this.trackedPositionId) {
         // Only consider the tracked position
-        const tracked = poolPositions.find(p => p.positionId === this.trackedPositionId);
-        positionsNeedingRebalance = tracked && this.monitorService.shouldRebalance(tracked, poolInfo)
-          ? [tracked]
+        const trackedPosition = poolPositions.find(p => p.positionId === this.trackedPositionId);
+        positionsNeedingRebalance = trackedPosition && this.monitorService.shouldRebalance(trackedPosition, poolInfo)
+          ? [trackedPosition]
           : [];
       } else {
         positionsNeedingRebalance = poolPositions.filter(p =>
@@ -854,12 +854,12 @@ export class RebalanceService {
 
       // Determine which single position to track and rebalance.
       // The bot always manages exactly ONE position at a time.
-      let tracked: PositionInfo | undefined;
+      let trackedPosition: PositionInfo | undefined;
 
       if (this.trackedPositionId) {
         // Use the explicitly tracked position (from config or previous rebalance)
-        tracked = poolPositions.find(p => p.positionId === this.trackedPositionId);
-        if (!tracked) {
+        trackedPosition = poolPositions.find(p => p.positionId === this.trackedPositionId);
+        if (!trackedPosition) {
           logger.warn(`Tracked position ${this.trackedPositionId} not found in pool — skipping`);
           return null;
         }
@@ -872,8 +872,8 @@ export class RebalanceService {
           if (liqA < liqB) return 1;
           return 0;
         });
-        tracked = sorted[0];
-        this.trackedPositionId = tracked.positionId;
+        trackedPosition = sorted[0];
+        this.trackedPositionId = trackedPosition.positionId;
         logger.info('Auto-tracking position with most liquidity', {
           positionId: this.trackedPositionId,
         });
@@ -884,22 +884,22 @@ export class RebalanceService {
 
       // Check if the tracked position needs rebalancing
       const isInRange = this.monitorService.isPositionInRange(
-        tracked.tickLower,
-        tracked.tickUpper,
+        trackedPosition.tickLower,
+        trackedPosition.tickUpper,
         poolInfo.currentTickIndex,
       );
 
-      if (isInRange && !this.monitorService.shouldRebalance(tracked, poolInfo)) {
+      if (isInRange && !this.monitorService.shouldRebalance(trackedPosition, poolInfo)) {
         logger.info(
-          `Tracked position ${tracked.positionId} is in range ` +
-          `[${tracked.tickLower}, ${tracked.tickUpper}] at tick ${poolInfo.currentTickIndex} — no action needed`,
+          `Tracked position ${trackedPosition.positionId} is in range ` +
+          `[${trackedPosition.tickLower}, ${trackedPosition.tickUpper}] at tick ${poolInfo.currentTickIndex} — no action needed`,
         );
         return null;
       }
 
       logger.info(
-        `Tracked position ${tracked.positionId} is OUT of range ` +
-        `[${tracked.tickLower}, ${tracked.tickUpper}] at tick ${poolInfo.currentTickIndex} — rebalance needed`,
+        `Tracked position ${trackedPosition.positionId} is OUT of range ` +
+        `[${trackedPosition.tickLower}, ${trackedPosition.tickUpper}] at tick ${poolInfo.currentTickIndex} — rebalance needed`,
       );
       return await this.rebalancePosition(poolAddress);
     } catch (error) {
