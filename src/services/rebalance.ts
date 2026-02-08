@@ -31,14 +31,6 @@ interface RemoveLiquidityParams {
   rewarder_coin_types: string[];
 }
 
-interface OpenPositionParams {
-  pool_id: string;
-  tick_lower: string;
-  tick_upper: string;
-  coinTypeA: string;
-  coinTypeB: string;
-}
-
 interface AddLiquidityFixTokenParams {
   pool_id: string;
   pos_id: string;
@@ -531,12 +523,22 @@ export class RebalanceService {
       // we fix the non-zero token so the SDK can compute the required counterpart.
       const fixAmountA = BigInt(amountA) >= BigInt(amountB);
 
-      let positionId: string;
-      let openPositionDigest: string | undefined;
+      // Determine whether we need to open a new position or add to an existing one.
+      // When opening a new position we use is_open: true so the SDK combines
+      // open + add-liquidity into a single atomic transaction.  This avoids the
+      // "object owned by another object" error that occurs when trying to use
+      // a freshly-created position NFT as input to a separate add-liquidity tx.
+      const isOpen = !existingPositionId;
+      const positionId = existingPositionId || '';
 
-      if (existingPositionId) {
-        // Use existing position instead of creating a new one
-        positionId = existingPositionId;
+      if (isOpen) {
+        logger.info('Opening new position and adding liquidity in a single transaction', {
+          amountA,
+          amountB,
+          tickLower,
+          tickUpper,
+        });
+      } else {
         logger.info('Adding liquidity to existing position', {
           positionId,
           amountA,
@@ -544,152 +546,73 @@ export class RebalanceService {
           tickLower,
           tickUpper,
         });
-      } else {
-        logger.info('Opening new position with liquidity', {
-          amountA,
-          amountB,
-          tickLower,
-          tickUpper,
-        });
-
-        // Build open position transaction with type-safe parameters
-        const openParams: OpenPositionParams = {
-          pool_id: poolInfo.poolAddress,
-          tick_lower: tickLower.toString(),
-          tick_upper: tickUpper.toString(),
-          coinTypeA: poolInfo.coinTypeA,
-          coinTypeB: poolInfo.coinTypeB,
-        };
-        
-        // First, open the position with retry logic
-        logger.info('Opening position...');
-        const openResult = await this.retryTransaction(
-          async () => {
-            const openPositionPayload = await sdk.Position.openPositionTransactionPayload(openParams as any);
-            
-            const result = await suiClient.signAndExecuteTransaction({
-              transaction: openPositionPayload,
-              signer: keypair,
-              options: {
-                showEffects: true,
-                showEvents: true,
-                showObjectChanges: true,
-              },
-            });
-
-            if (result.effects?.status?.status !== 'success') {
-              throw new Error(`Failed to open position: ${result.effects?.status?.error || 'Unknown error'}`);
-            }
-
-            return result;
-          },
-          'open position',
-          3,
-          2000
-        );
-
-        logger.info('Position opened successfully', {
-          digest: openResult.digest,
-        });
-
-        // Extract the position NFT ID from the result
-        // Search for created position object in transaction changes
-        const createdObjects = (openResult.objectChanges?.filter((change: any) => change.type === 'created') || []) as any[];
-        const positionObject = createdObjects.find((obj: any) => 
-          obj.objectType && typeof obj.objectType === 'string' && obj.objectType.includes('Position')
-        );
-
-        if (!positionObject || !positionObject.objectId) {
-          // Position might be created but we couldn't extract the ID
-          // Log success but note that we couldn't track the position ID
-          logger.warn('Position created but could not extract position NFT ID from transaction result');
-          return {
-            transactionDigest: openResult.digest,
-          };
-        }
-
-        // Extract the position ID (validated above)
-        positionId = positionObject.objectId as string;
-        openPositionDigest = openResult.digest;
-        logger.info('Position NFT created', { positionId });
       }
 
-      // Now add liquidity to the position
-      try {
-        logger.info('Adding liquidity to position...');
-        
-        // Use the SDK's fix token method which automatically calculates liquidity
-        // Fix the token with the larger amount to maximize liquidity added
-        const addLiquidityParams: AddLiquidityFixTokenParams = {
-          pool_id: poolInfo.poolAddress,
-          pos_id: positionId,
-          tick_lower: tickLower,
-          tick_upper: tickUpper,
-          amount_a: amountA,
-          amount_b: amountB,
-          slippage: this.config.maxSlippage,
-          fix_amount_a: fixAmountA,
-          is_open: false, // Position is already open
-          coinTypeA: poolInfo.coinTypeA,
-          coinTypeB: poolInfo.coinTypeB,
-          collect_fee: false,
-          rewarder_coin_types: [],
-        };
-        
-        // Add liquidity with retry logic
-        logger.info('Executing add liquidity transaction...');
-        const addResult = await this.retryTransaction(
-          async () => {
-            // Refetch pool state on each retry to get latest version
-            const pool = await sdk.Pool.getPool(poolInfo.poolAddress);
-            const currentSqrtPrice = new BN(pool.current_sqrt_price);
-            
-            // Use createAddLiquidityFixTokenPayload which handles liquidity calculation
-            const addLiquidityPayload = await sdk.Position.createAddLiquidityFixTokenPayload(
-              addLiquidityParams as any,
-              {
-                slippage: this.config.maxSlippage,
-                curSqrtPrice: currentSqrtPrice,
-              }
-            );
-            
-            const result = await suiClient.signAndExecuteTransaction({
-              transaction: addLiquidityPayload,
-              signer: keypair,
-              options: {
-                showEffects: true,
-                showEvents: true,
-              },
-            });
-            
-            if (result.effects?.status?.status !== 'success') {
-              throw new Error(`Failed to add liquidity: ${result.effects?.status?.error || 'Unknown error'}`);
+      // Use the SDK's fix token method which automatically calculates liquidity.
+      // When is_open is true the SDK opens the position and adds liquidity atomically.
+      const addLiquidityParams: AddLiquidityFixTokenParams = {
+        pool_id: poolInfo.poolAddress,
+        pos_id: positionId,
+        tick_lower: tickLower,
+        tick_upper: tickUpper,
+        amount_a: amountA,
+        amount_b: amountB,
+        slippage: this.config.maxSlippage,
+        fix_amount_a: fixAmountA,
+        is_open: isOpen,
+        coinTypeA: poolInfo.coinTypeA,
+        coinTypeB: poolInfo.coinTypeB,
+        collect_fee: false,
+        rewarder_coin_types: [],
+      };
+      
+      // Add liquidity with retry logic
+      logger.info('Executing add liquidity transaction...');
+      const addResult = await this.retryTransaction(
+        async () => {
+          // Refetch pool state on each retry to get latest version
+          const pool = await sdk.Pool.getPool(poolInfo.poolAddress);
+          const currentSqrtPrice = new BN(pool.current_sqrt_price);
+          
+          // Use createAddLiquidityFixTokenPayload which handles liquidity calculation
+          const addLiquidityPayload = await sdk.Position.createAddLiquidityFixTokenPayload(
+            addLiquidityParams as any,
+            {
+              slippage: this.config.maxSlippage,
+              curSqrtPrice: currentSqrtPrice,
             }
-            
-            return result;
-          },
-          'add liquidity',
-          3,
-          2000
-        );
-        
-        logger.info('Liquidity added successfully', {
-          digest: addResult.digest,
-          positionId,
-          amountA,
-          amountB,
-        });
-        
-        return {
-          transactionDigest: addResult.digest,
-        };
-      } catch (addError) {
-        logger.error('Failed to add liquidity to position', addError);
-        logger.warn('Position is open but has no liquidity. You may need to add liquidity manually.');
-        return {
-          transactionDigest: openPositionDigest,
-        };
-      }
+          );
+          
+          const result = await suiClient.signAndExecuteTransaction({
+            transaction: addLiquidityPayload,
+            signer: keypair,
+            options: {
+              showEffects: true,
+              showEvents: true,
+            },
+          });
+          
+          if (result.effects?.status?.status !== 'success') {
+            throw new Error(`Failed to add liquidity: ${result.effects?.status?.error || 'Unknown error'}`);
+          }
+          
+          return result;
+        },
+        'add liquidity',
+        3,
+        2000
+      );
+      
+      logger.info('Liquidity added successfully', {
+        digest: addResult.digest,
+        positionId: isOpen ? '(new position)' : positionId,
+        amountA,
+        amountB,
+      });
+      
+      return {
+        transactionDigest: addResult.digest,
+      };
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
       const errorStack = error instanceof Error ? error.stack : undefined;
