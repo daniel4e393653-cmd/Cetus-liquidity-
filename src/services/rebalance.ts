@@ -482,6 +482,18 @@ export class RebalanceService {
       const balanceABigInt = BigInt(balanceA.totalBalance);
       const balanceBBigInt = BigInt(balanceB.totalBalance);
       const defaultMinAmount = 1000n;
+
+      // Reserve gas when a token is SUI so the add-liquidity transaction
+      // does not try to spend the entire balance and fail with balance::split.
+      const SUI_GAS_RESERVE = BigInt(this.config.gasBudget); // e.g. 0.1 SUI
+      const isSuiA = poolInfo.coinTypeA === '0x2::sui::SUI' || poolInfo.coinTypeA.endsWith('::sui::SUI');
+      const isSuiB = poolInfo.coinTypeB === '0x2::sui::SUI' || poolInfo.coinTypeB.endsWith('::sui::SUI');
+      const safeBalanceA = isSuiA && balanceABigInt > SUI_GAS_RESERVE
+        ? balanceABigInt - SUI_GAS_RESERVE
+        : balanceABigInt;
+      const safeBalanceB = isSuiB && balanceBBigInt > SUI_GAS_RESERVE
+        ? balanceBBigInt - SUI_GAS_RESERVE
+        : balanceBBigInt;
       
       let amountA: string;
       let amountB: string;
@@ -489,18 +501,19 @@ export class RebalanceService {
       if (removedAmountA || removedAmountB) {
         // Rebalancing: use the token amounts freed from the old position.
         // For out-of-range positions, one token's freed amount may be 0/undefined.
-        // Fall back to the wallet balance so the SDK can pull the required
-        // counterpart amount when adding to an in-range position.
-        // Also cap at wallet balance to handle gas-cost deductions (e.g. when
-        // one of the tokens is SUI, removal gas reduces the balance delta).
+        // Fall back to the safe wallet balance (minus gas reserve for SUI) so
+        // the SDK can pull the required counterpart amount when adding to an
+        // in-range position.
+        // Cap at safe balance to handle gas-cost deductions (e.g. when one of
+        // the tokens is SUI, removal gas reduces the balance delta).
         const removedA = removedAmountA ? BigInt(removedAmountA) : 0n;
         const removedB = removedAmountB ? BigInt(removedAmountB) : 0n;
-        amountA = (removedA > 0n && removedA <= balanceABigInt ? removedA : balanceABigInt).toString();
-        amountB = (removedB > 0n && removedB <= balanceBBigInt ? removedB : balanceBBigInt).toString();
+        amountA = (removedA > 0n && removedA <= safeBalanceA ? removedA : safeBalanceA).toString();
+        amountB = (removedB > 0n && removedB <= safeBalanceB ? removedB : safeBalanceB).toString();
         logger.info('Using removed position amounts for rebalance', { amountA, amountB });
       } else {
-        amountA = this.config.tokenAAmount || String(balanceABigInt > 0n ? balanceABigInt / 10n : defaultMinAmount);
-        amountB = this.config.tokenBAmount || String(balanceBBigInt > 0n ? balanceBBigInt / 10n : defaultMinAmount);
+        amountA = this.config.tokenAAmount || String(safeBalanceA > 0n ? safeBalanceA / 10n : defaultMinAmount);
+        amountB = this.config.tokenBAmount || String(safeBalanceB > 0n ? safeBalanceB / 10n : defaultMinAmount);
       }
 
       // Validate amounts
