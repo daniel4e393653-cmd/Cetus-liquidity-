@@ -114,17 +114,10 @@ export class RebalanceService {
       );
 
       if (!hasLiquidityToMove) {
-        // All out-of-range positions are empty - check if in-range position already exists
-        const inRangePositions = poolPositions.filter(p => 
-          !this.monitorService.shouldRebalance(p, poolInfo)
-        );
-        
-        if (inRangePositions.length > 0) {
-          logger.info('Out-of-range positions have no liquidity and in-range position already exists - no action needed');
-          return { success: true };
-        }
-        
-        logger.info('No in-range position exists - will create new position with wallet funds');
+        // All out-of-range positions are empty — nothing to rebalance.
+        // Never fall through to adding random/arbitrary amounts.
+        logger.info('No positions with liquidity to rebalance — skipping');
+        return { success: false, error: 'No positions with liquidity to rebalance' };
       }
 
       // Prefer positions with liquidity for rebalancing
