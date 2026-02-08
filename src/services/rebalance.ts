@@ -487,9 +487,16 @@ export class RebalanceService {
       let amountB: string;
       
       if (removedAmountA || removedAmountB) {
-        // Rebalancing: use the same token amounts that were freed from the old position
-        amountA = removedAmountA || '0';
-        amountB = removedAmountB || '0';
+        // Rebalancing: use the token amounts freed from the old position.
+        // For out-of-range positions, one token's freed amount may be 0/undefined.
+        // Fall back to the wallet balance so the SDK can pull the required
+        // counterpart amount when adding to an in-range position.
+        // Also cap at wallet balance to handle gas-cost deductions (e.g. when
+        // one of the tokens is SUI, removal gas reduces the balance delta).
+        const removedA = removedAmountA ? BigInt(removedAmountA) : 0n;
+        const removedB = removedAmountB ? BigInt(removedAmountB) : 0n;
+        amountA = (removedA > 0n && removedA <= balanceABigInt ? removedA : balanceABigInt).toString();
+        amountB = (removedB > 0n && removedB <= balanceBBigInt ? removedB : balanceBBigInt).toString();
         logger.info('Using removed position amounts for rebalance', { amountA, amountB });
       } else {
         amountA = this.config.tokenAAmount || String(balanceABigInt > 0n ? balanceABigInt / 10n : defaultMinAmount);
@@ -502,9 +509,13 @@ export class RebalanceService {
         const amountBBigInt = BigInt(amountB);
         
         if (removedAmountA || removedAmountB) {
-          // During rebalance, an out-of-range position may have all value in one token
+          // During rebalance, an out-of-range position may have all value in one token.
+          // After falling back to wallet balance, both should be non-zero if possible.
           if (amountABigInt === 0n && amountBBigInt === 0n) {
-            throw new Error('No tokens were freed from the removed position.');
+            throw new Error('No tokens available for rebalancing. Wallet has insufficient balance of both tokens.');
+          }
+          if (amountABigInt === 0n || amountBBigInt === 0n) {
+            logger.warn('Only one token has available balance for rebalancing. A swap may be needed for optimal results.');
           }
         } else {
           if (amountABigInt === 0n || amountBBigInt === 0n) {
