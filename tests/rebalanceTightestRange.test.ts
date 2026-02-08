@@ -100,20 +100,21 @@ function buildService(overrides: Partial<BotConfig> = {}): PositionMonitorServic
     const removedA = removedAmountA ? BigInt(removedAmountA) : 0n;
     const removedB = removedAmountB ? BigInt(removedAmountB) : 0n;
 
-    const amountA = (removedA > 0n && removedA <= safeBalanceA ? removedA : safeBalanceA).toString();
-    const amountB = (removedB > 0n && removedB <= safeBalanceB ? removedB : safeBalanceB).toString();
+    const amountA = (removedA > 0n ? (removedA <= safeBalanceA ? removedA : safeBalanceA) : 0n).toString();
+    const amountB = (removedB > 0n ? (removedB <= safeBalanceB ? removedB : safeBalanceB) : 0n).toString();
 
     return { amountA, amountB };
   }
 
   // SUI gas reserve with reduced budget: 4.2 SUI wallet, 0.05 SUI reserve → safe = 4.15 SUI
+  // When no removed amount is provided, amount stays 0 (no wallet fallback).
   {
     const { amountA } = computeRebalanceAmounts(
       undefined, '5000000000', '4200000000', '6000000000',
       true, false,
     );
-    assert.strictEqual(amountA, '4150000000', 'reduced gas reserve: 4.2 - 0.05 = 4.15 SUI');
-    console.log('✔ reduced gas budget (50M MIST) applied correctly for SUI reserve');
+    assert.strictEqual(amountA, '0', 'no removed A → stays 0 (no wallet fallback)');
+    console.log('✔ reduced gas budget: no removed amount stays 0');
   }
 
   // Same amounts re-added: removed amounts are used when within safe balance
@@ -124,12 +125,13 @@ function buildService(overrides: Partial<BotConfig> = {}): PositionMonitorServic
     console.log('✔ same amounts from old position are re-added');
   }
 
-  // Single-sided removal: only one token freed, other falls back to wallet balance
+  // Single-sided removal: only one token freed, the other stays 0.
+  // The swap logic (not tested here) will later balance the tokens.
   {
     const { amountA, amountB } = computeRebalanceAmounts(undefined, '5000', '1200', '6000');
-    assert.strictEqual(amountA, '1200', 'wallet balance used for missing token');
+    assert.strictEqual(amountA, '0', 'no removed A → stays 0 (swap logic will balance)');
     assert.strictEqual(amountB, '5000', 'freed amount re-added');
-    console.log('✔ single-sided removal: freed amount + wallet fallback');
+    console.log('✔ single-sided removal: freed amount kept, other stays 0');
   }
 }
 

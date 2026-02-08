@@ -14,6 +14,7 @@ export interface BotConfig {
 
   // Pool settings
   poolAddress: string;
+  positionId?: string;
   lowerTick?: number;
   upperTick?: number;
   rangeWidth?: number;
@@ -66,6 +67,7 @@ export function loadConfig(): BotConfig {
     checkInterval: getEnvNumber('CHECK_INTERVAL', 300),
     rebalanceThreshold: getEnvNumber('REBALANCE_THRESHOLD', 0.05),
     poolAddress,
+    positionId: getEnvVar('POSITION_ID', false) || undefined,
     lowerTick: getEnvVar('LOWER_TICK', false) ? parseInt(getEnvVar('LOWER_TICK', false)) : undefined,
     upperTick: getEnvVar('UPPER_TICK', false) ? parseInt(getEnvVar('UPPER_TICK', false)) : undefined,
     rangeWidth: getEnvVar('RANGE_WIDTH', false) ? parseInt(getEnvVar('RANGE_WIDTH', false)) : undefined,

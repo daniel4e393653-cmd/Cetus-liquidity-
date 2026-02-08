@@ -80,6 +80,12 @@ export class RebalanceService {
       const poolPositions = positions.filter(p => p.poolAddress === poolAddress);
 
       if (poolPositions.length === 0) {
+        // When tracking a specific position, never create from scratch
+        if (this.config.positionId) {
+          logger.warn('Tracked position not found — cannot rebalance');
+          return { success: false, error: 'Tracked position not found' };
+        }
+
         logger.info('No positions found for pool - creating new position');
         
         if (this.dryRun) {
@@ -98,9 +104,18 @@ export class RebalanceService {
       }
 
       // Find positions that actually need rebalancing
-      const positionsNeedingRebalance = poolPositions.filter(p => 
-        this.monitorService.shouldRebalance(p, poolInfo)
-      );
+      let positionsNeedingRebalance: PositionInfo[];
+      if (this.config.positionId) {
+        // Only consider the tracked position
+        const tracked = poolPositions.find(p => p.positionId === this.config.positionId);
+        positionsNeedingRebalance = tracked && this.monitorService.shouldRebalance(tracked, poolInfo)
+          ? [tracked]
+          : [];
+      } else {
+        positionsNeedingRebalance = poolPositions.filter(p =>
+          this.monitorService.shouldRebalance(p, poolInfo)
+        );
+      }
 
       if (positionsNeedingRebalance.length === 0) {
         logger.info('No position currently needs rebalancing');
@@ -143,11 +158,16 @@ export class RebalanceService {
         liquidity: position.liquidity,
       });
 
-      // Calculate the tightest active range (single tick-spacing bin) centred
-      // on the current tick.  This maximises capital efficiency and fee capture.
+      // Calculate the new optimal range.  When tracking a specific position,
+      // preserve its original range width so the rebalanced position covers the
+      // same tick span.  Otherwise default to the tightest active range.
+      const preserveWidth = this.config.positionId
+        ? position.tickUpper - position.tickLower
+        : undefined;
       const { lower, upper } = this.monitorService.calculateOptimalRange(
         poolInfo.currentTickIndex,
         poolInfo.tickSpacing,
+        preserveWidth,
       );
 
       // If range hasn't changed significantly, skip rebalance
@@ -620,6 +640,17 @@ export class RebalanceService {
             );
 
             try {
+              // Capture wallet balances before swap so we can compute the
+              // delta and re-add only the freed liquidity — not the entire wallet.
+              const preSwapBalA = await suiClient.getBalance({
+                owner: ownerAddress,
+                coinType: poolInfo.coinTypeA,
+              });
+              const preSwapBalB = await suiClient.getBalance({
+                owner: ownerAddress,
+                coinType: poolInfo.coinTypeB,
+              });
+
               await this.performSwap(poolInfo, hasOnlyA, swapAmount.toString());
 
               // Re-fetch wallet balances after swap
@@ -632,21 +663,31 @@ export class RebalanceService {
                 coinType: poolInfo.coinTypeB,
               });
 
-              const postBigA = BigInt(postSwapBalA.totalBalance);
-              const postBigB = BigInt(postSwapBalB.totalBalance);
-              const newSafeA =
-                isSuiA && postBigA > SUI_GAS_RESERVE
-                  ? postBigA - SUI_GAS_RESERVE
-                  : postBigA;
-              const newSafeB =
-                isSuiB && postBigB > SUI_GAS_RESERVE
-                  ? postBigB - SUI_GAS_RESERVE
-                  : postBigB;
+              // Compute swap deltas and adjust the freed amounts accordingly.
+              // This ensures we only re-add the liquidity that came from the
+              // old position, not pre-existing wallet funds.
+              const swapDeltaA = BigInt(postSwapBalA.totalBalance) - BigInt(preSwapBalA.totalBalance);
+              const swapDeltaB = BigInt(postSwapBalB.totalBalance) - BigInt(preSwapBalB.totalBalance);
 
-              amountA = (newSafeA > 0n ? newSafeA : 0n).toString();
-              amountB = (newSafeB > 0n ? newSafeB : 0n).toString();
+              let adjustedAmountA = preSwapA + swapDeltaA;
+              let adjustedAmountB = preSwapB + swapDeltaB;
 
-              logger.info('Balances after swap', { amountA, amountB });
+              // Reserve gas when SUI is one of the tokens
+              if (isSuiA) {
+                const walletA = BigInt(postSwapBalA.totalBalance);
+                const maxUsableA = walletA > SUI_GAS_RESERVE ? walletA - SUI_GAS_RESERVE : 0n;
+                if (adjustedAmountA > maxUsableA) adjustedAmountA = maxUsableA;
+              }
+              if (isSuiB) {
+                const walletB = BigInt(postSwapBalB.totalBalance);
+                const maxUsableB = walletB > SUI_GAS_RESERVE ? walletB - SUI_GAS_RESERVE : 0n;
+                if (adjustedAmountB > maxUsableB) adjustedAmountB = maxUsableB;
+              }
+
+              amountA = (adjustedAmountA > 0n ? adjustedAmountA : 0n).toString();
+              amountB = (adjustedAmountB > 0n ? adjustedAmountB : 0n).toString();
+
+              logger.info('Post-swap amounts (removed position liquidity adjusted by swap deltas)', { amountA, amountB });
             } catch (swapError) {
               const swapMsg = swapError instanceof Error ? swapError.message : String(swapError);
               logger.warn(
@@ -805,6 +846,35 @@ export class RebalanceService {
       const ownerAddress = this.sdkService.getAddress();
       const allPositions = await this.monitorService.getPositions(ownerAddress);
       const poolPositions = allPositions.filter(p => p.poolAddress === poolAddress);
+
+      // When a specific position is configured, track only that one
+      if (this.config.positionId) {
+        const tracked = poolPositions.find(p => p.positionId === this.config.positionId);
+        if (!tracked) {
+          logger.warn(`Tracked position ${this.config.positionId} not found in pool — skipping`);
+          return null;
+        }
+
+        const isInRange = this.monitorService.isPositionInRange(
+          tracked.tickLower,
+          tracked.tickUpper,
+          poolInfo.currentTickIndex,
+        );
+
+        if (isInRange && !this.monitorService.shouldRebalance(tracked, poolInfo)) {
+          logger.info(
+            `Tracked position ${tracked.positionId} is in range ` +
+            `[${tracked.tickLower}, ${tracked.tickUpper}] at tick ${poolInfo.currentTickIndex} — no action needed`,
+          );
+          return null;
+        }
+
+        logger.info(
+          `Tracked position ${tracked.positionId} is OUT of range ` +
+          `[${tracked.tickLower}, ${tracked.tickUpper}] at tick ${poolInfo.currentTickIndex} — rebalance needed`,
+        );
+        return await this.rebalancePosition(poolAddress);
+      }
 
       if (poolPositions.length === 0) {
         logger.info('No existing positions found in pool - will create new position');

@@ -28,6 +28,7 @@ export class CetusRebalanceBot {
       network: config.network,
       address: this.sdkService.getAddress(),
       poolAddress: config.poolAddress,
+      positionId: config.positionId || '(all positions)',
       checkInterval: config.checkInterval,
     });
   }
@@ -117,7 +118,26 @@ export class CetusRebalanceBot {
           });
         } else {
           logger.info('No existing positions found in this pool');
-          logger.warn('The bot will attempt to create a new position when rebalancing is triggered');
+          if (!config.positionId) {
+            logger.warn('The bot will attempt to create a new position when rebalancing is triggered');
+          }
+        }
+
+        // When a POSITION_ID is configured, verify it exists in the pool
+        if (config.positionId) {
+          const tracked = poolPositions.find(p => p.positionId === config.positionId);
+          if (tracked) {
+            logger.info(`Tracking position: ${config.positionId}`, {
+              tickRange: `[${tracked.tickLower}, ${tracked.tickUpper}]`,
+              liquidity: tracked.liquidity,
+              inRange: tracked.inRange,
+            });
+          } else {
+            logger.warn(
+              `Configured POSITION_ID ${config.positionId} not found in pool. ` +
+              `The bot will wait until the position appears.`
+            );
+          }
         }
       } catch (error) {
         logger.warn('Could not fetch existing positions', error);
