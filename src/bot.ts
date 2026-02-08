@@ -118,9 +118,7 @@ export class CetusRebalanceBot {
           });
         } else {
           logger.info('No existing positions found in this pool');
-          if (!config.positionId) {
-            logger.warn('The bot will attempt to create a new position when rebalancing is triggered');
-          }
+          logger.info('The bot will wait until a position is created to begin rebalancing');
         }
 
         // When a POSITION_ID is configured, verify it exists in the pool

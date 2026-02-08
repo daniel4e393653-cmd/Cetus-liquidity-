@@ -52,6 +52,7 @@ export class RebalanceService {
   private monitorService: PositionMonitorService;
   private config: BotConfig;
   private dryRun: boolean;
+  private trackedPositionId: string | null;
 
   constructor(
     sdkService: CetusSDKService,
@@ -63,6 +64,9 @@ export class RebalanceService {
     this.config = config;
     // Enable dry-run mode via environment variable
     this.dryRun = process.env.DRY_RUN === 'true';
+    // Track the single position this bot manages.  Initialized from config
+    // and updated automatically after each rebalance cycle.
+    this.trackedPositionId = config.positionId || null;
     
     if (this.dryRun) {
       logger.warn('⚠️  DRY RUN MODE ENABLED - No real transactions will be executed');
@@ -80,34 +84,15 @@ export class RebalanceService {
       const poolPositions = positions.filter(p => p.poolAddress === poolAddress);
 
       if (poolPositions.length === 0) {
-        // When tracking a specific position, never create from scratch
-        if (this.config.positionId) {
-          logger.warn('Tracked position not found — cannot rebalance');
-          return { success: false, error: 'Tracked position not found' };
-        }
-
-        logger.info('No positions found for pool - creating new position');
-        
-        if (this.dryRun) {
-          logger.info('[DRY RUN] Would create new position');
-          const range = this.monitorService.calculateOptimalRange(
-            poolInfo.currentTickIndex,
-            poolInfo.tickSpacing
-          );
-          return {
-            success: true,
-            newPosition: { tickLower: range.lower, tickUpper: range.upper },
-          };
-        }
-        
-        return await this.createNewPosition(poolInfo);
+        logger.info('No existing positions found for pool — nothing to rebalance');
+        return { success: false, error: 'No existing position to rebalance' };
       }
 
       // Find positions that actually need rebalancing
       let positionsNeedingRebalance: PositionInfo[];
-      if (this.config.positionId) {
+      if (this.trackedPositionId) {
         // Only consider the tracked position
-        const tracked = poolPositions.find(p => p.positionId === this.config.positionId);
+        const tracked = poolPositions.find(p => p.positionId === this.trackedPositionId);
         positionsNeedingRebalance = tracked && this.monitorService.shouldRebalance(tracked, poolInfo)
           ? [tracked]
           : [];
@@ -161,7 +146,7 @@ export class RebalanceService {
       // Calculate the new optimal range.  When tracking a specific position,
       // preserve its original range width so the rebalanced position covers the
       // same tick span.  Otherwise default to the tightest active range.
-      const preserveWidth = this.config.positionId
+      const preserveWidth = this.trackedPositionId
         ? position.tickUpper - position.tickLower
         : undefined;
       const { lower, upper } = this.monitorService.calculateOptimalRange(
@@ -271,6 +256,26 @@ export class RebalanceService {
       // Add liquidity to existing in-range position or create a new one
       // Pass the removed token amounts so the same liquidity is re-added
       const result = await this.addLiquidity(poolInfo, lower, upper, existingInRangePosition?.positionId, removedAmountA, removedAmountB);
+
+      // If a new position was created, discover it and update tracking so
+      // subsequent cycles manage the new position instead of the old one.
+      if (!existingInRangePosition) {
+        try {
+          const updatedPositions = await this.monitorService.getPositions(ownerAddress);
+          const newPos = updatedPositions.find(p =>
+            p.poolAddress === poolAddress &&
+            p.tickLower === lower &&
+            p.tickUpper === upper &&
+            p.positionId !== position.positionId
+          );
+          if (newPos) {
+            this.trackedPositionId = newPos.positionId;
+            logger.info('Now tracking newly created position', { positionId: newPos.positionId });
+          }
+        } catch (err) {
+          logger.warn('Could not discover new position ID after rebalance', err);
+        }
+      }
 
       logger.info('Rebalance completed successfully', {
         oldRange: { lower: position.tickLower, upper: position.tickUpper },
@@ -847,79 +852,55 @@ export class RebalanceService {
       const allPositions = await this.monitorService.getPositions(ownerAddress);
       const poolPositions = allPositions.filter(p => p.poolAddress === poolAddress);
 
-      // When a specific position is configured, track only that one
-      if (this.config.positionId) {
-        const tracked = poolPositions.find(p => p.positionId === this.config.positionId);
+      // Determine which single position to track and rebalance.
+      // The bot always manages exactly ONE position at a time.
+      let tracked: PositionInfo | undefined;
+
+      if (this.trackedPositionId) {
+        // Use the explicitly tracked position (from config or previous rebalance)
+        tracked = poolPositions.find(p => p.positionId === this.trackedPositionId);
         if (!tracked) {
-          logger.warn(`Tracked position ${this.config.positionId} not found in pool — skipping`);
+          logger.warn(`Tracked position ${this.trackedPositionId} not found in pool — skipping`);
           return null;
         }
+      } else if (poolPositions.length > 0) {
+        // Auto-track: pick the position with the most liquidity
+        const sorted = [...poolPositions].sort((a, b) => {
+          const liqA = BigInt(a.liquidity || '0');
+          const liqB = BigInt(b.liquidity || '0');
+          if (liqA > liqB) return -1;
+          if (liqA < liqB) return 1;
+          return 0;
+        });
+        tracked = sorted[0];
+        this.trackedPositionId = tracked.positionId;
+        logger.info('Auto-tracking position with most liquidity', {
+          positionId: this.trackedPositionId,
+        });
+      } else {
+        logger.info('No existing positions found in pool — nothing to rebalance');
+        return null;
+      }
 
-        const isInRange = this.monitorService.isPositionInRange(
-          tracked.tickLower,
-          tracked.tickUpper,
-          poolInfo.currentTickIndex,
-        );
+      // Check if the tracked position needs rebalancing
+      const isInRange = this.monitorService.isPositionInRange(
+        tracked.tickLower,
+        tracked.tickUpper,
+        poolInfo.currentTickIndex,
+      );
 
-        if (isInRange && !this.monitorService.shouldRebalance(tracked, poolInfo)) {
-          logger.info(
-            `Tracked position ${tracked.positionId} is in range ` +
-            `[${tracked.tickLower}, ${tracked.tickUpper}] at tick ${poolInfo.currentTickIndex} — no action needed`,
-          );
-          return null;
-        }
-
+      if (isInRange && !this.monitorService.shouldRebalance(tracked, poolInfo)) {
         logger.info(
-          `Tracked position ${tracked.positionId} is OUT of range ` +
-          `[${tracked.tickLower}, ${tracked.tickUpper}] at tick ${poolInfo.currentTickIndex} — rebalance needed`,
+          `Tracked position ${tracked.positionId} is in range ` +
+          `[${tracked.tickLower}, ${tracked.tickUpper}] at tick ${poolInfo.currentTickIndex} — no action needed`,
         );
-        return await this.rebalancePosition(poolAddress);
-      }
-
-      if (poolPositions.length === 0) {
-        logger.info('No existing positions found in pool - will create new position');
-        return await this.rebalancePosition(poolAddress);
-      }
-
-      // Check each position: in-range positions are left untouched, out-of-range
-      // positions are candidates for rebalancing.
-      const inRangePositions: PositionInfo[] = [];
-      const outOfRangePositions: PositionInfo[] = [];
-
-      for (const pos of poolPositions) {
-        const isInRange = this.monitorService.isPositionInRange(
-          pos.tickLower,
-          pos.tickUpper,
-          poolInfo.currentTickIndex,
-        );
-
-        if (isInRange) {
-          logger.info(
-            `Position ${pos.positionId} is in range [${pos.tickLower}, ${pos.tickUpper}] ` +
-            `at tick ${poolInfo.currentTickIndex} — no action needed`,
-          );
-          inRangePositions.push(pos);
-        } else {
-          logger.info(
-            `Position ${pos.positionId} is OUT of range [${pos.tickLower}, ${pos.tickUpper}] ` +
-            `at tick ${poolInfo.currentTickIndex} — rebalance needed`,
-          );
-          outOfRangePositions.push(pos);
-        }
-      }
-
-      if (outOfRangePositions.length === 0) {
-        logger.info('All positions are in range — no rebalance needed');
         return null;
       }
 
       logger.info(
-        `${outOfRangePositions.length} out-of-range position(s) and ` +
-        `${inRangePositions.length} in-range position(s) — proceeding with rebalance`,
+        `Tracked position ${tracked.positionId} is OUT of range ` +
+        `[${tracked.tickLower}, ${tracked.tickUpper}] at tick ${poolInfo.currentTickIndex} — rebalance needed`,
       );
-
-      // Rebalance: create new position with same parameters at new active range
-      // or rebalance existing position to the new active range.
       return await this.rebalancePosition(poolAddress);
     } catch (error) {
       logger.error('Check and rebalance failed', error);
