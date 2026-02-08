@@ -103,7 +103,6 @@ function needsSwap(
 {
   const tickLower = 1200;
   const tickUpper = 1260;
-  const tickSpacing = 60;
   const liquidity = '1000000000'; // 1e9
   // Use a sqrt price corresponding to a tick between lower and upper
   const curSqrtPrice = TickMath.tickIndexToSqrtPriceX64(1230);
