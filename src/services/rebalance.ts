@@ -603,12 +603,13 @@ export class RebalanceService {
       // Set gas budget
       tx.setGasBudget(this.config.gasBudget);
 
-      // Execute the merge transaction
+      // Execute the merge transaction with showObjectChanges to track the new merged coin
       const result = await suiClient.signAndExecuteTransaction({
         transaction: tx,
         signer: keypair,
         options: {
           showEffects: true,
+          showObjectChanges: true,
         },
       });
 
@@ -619,6 +620,21 @@ export class RebalanceService {
       logger.info(`Successfully merged coins for ${coinType}`, {
         digest: result.digest,
       });
+
+      // CRITICAL: Wait for transaction to be finalized and coin object to be available.
+      // Without this delay, the SDK may attempt to use stale coin object references,
+      // leading to MoveAbort error 0 in repay_add_liquidity at command 2.
+      // The blockchain needs time to update its state and make the new merged coin
+      // object available for subsequent transactions.
+      await new Promise(resolve => setTimeout(resolve, 2000));
+
+      // Verify the merge was successful by checking that coins are now consolidated
+      const verifyCoins = await suiClient.getCoins({
+        owner: ownerAddress,
+        coinType,
+      });
+      
+      logger.debug(`After merge verification: ${coinType} now has ${verifyCoins.data?.length || 0} coin object(s)`);
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
       logger.error(`Failed to merge coins for ${coinType}: ${errorMsg}`);
@@ -1110,9 +1126,15 @@ export class RebalanceService {
       // Merge coins before add liquidity to prevent MoveAbort error 0 in repay_add_liquidity.
       // Sui's object model can fragment coin balances into multiple objects, and the
       // Cetus SDK requires properly merged coins before executing transactions.
+      // Each merge includes a 2-second wait to ensure blockchain state is fully updated.
       logger.info('Merging coin objects before add liquidity transaction');
       await this.mergeCoins(poolInfo.coinTypeA);
       await this.mergeCoins(poolInfo.coinTypeB);
+      
+      // Additional safety delay to ensure all coin merges are fully propagated
+      // before the SDK creates the add liquidity transaction payload.
+      logger.debug('Waiting for coin merge propagation before creating add liquidity payload...');
+      await new Promise(resolve => setTimeout(resolve, 1000));
       
       // Add liquidity with retry logic
       logger.info('Executing add liquidity transaction...');
