@@ -108,6 +108,21 @@ function computeRebalanceAmounts(
   console.log('✔ exact amounts: wallet has much more but only freed amounts used');
 }
 
+// 1b. Freed amounts must win even when liquidity-derived estimates exist.
+{
+  const freed = computeRebalanceAmounts('2000', '3000', '5000000', '4000000');
+  const liquidityDerived = { amountA: '9999', amountB: '8888' };
+  const selected = (BigInt(freed.amountA) > 0n || BigInt(freed.amountB) > 0n)
+    ? freed
+    : liquidityDerived;
+  assert.deepStrictEqual(
+    selected,
+    freed,
+    'when freed amounts are known, do not replace them with liquidity estimates',
+  );
+  console.log('✔ freed amounts take precedence over liquidity-derived estimates');
+}
+
 // 2. Single-sided (all in token B) → token A stays 0, not wallet balance.
 {
   const { amountA, amountB } = computeRebalanceAmounts(

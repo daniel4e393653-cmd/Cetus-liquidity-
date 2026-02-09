@@ -601,7 +601,17 @@ export class RebalanceService {
       let amountA: string;
       let amountB: string;
       
-      if (originalLiquidity && BigInt(originalLiquidity) > 0n) {
+      if (removedAmountA || removedAmountB) {
+        // Fallback: use exactly the token amounts freed from the old position.
+        // For out-of-range positions one token may be 0 — keep it as 0 and let
+        // the swap logic below convert half of the non-zero token.
+        // Cap at safe balance to handle gas-cost deductions.
+        const removedA = removedAmountA ? BigInt(removedAmountA) : 0n;
+        const removedB = removedAmountB ? BigInt(removedAmountB) : 0n;
+        amountA = (removedA > 0n ? (removedA <= safeBalanceA ? removedA : safeBalanceA) : 0n).toString();
+        amountB = (removedB > 0n ? (removedB <= safeBalanceB ? removedB : safeBalanceB) : 0n).toString();
+        logger.info('Using removed position amounts for rebalance', { amountA, amountB });
+      } else if (originalLiquidity && BigInt(originalLiquidity) > 0n) {
         // Rebalancing with known liquidity: compute the exact token amounts
         // required to reconstruct the same liquidity value at the new tick range.
         // This ensures the new position carries the same leverage and liquidity
@@ -625,16 +635,6 @@ export class RebalanceService {
           amountA,
           amountB,
         });
-      } else if (removedAmountA || removedAmountB) {
-        // Fallback: use exactly the token amounts freed from the old position.
-        // For out-of-range positions one token may be 0 — keep it as 0 and let
-        // the swap logic below convert half of the non-zero token.
-        // Cap at safe balance to handle gas-cost deductions.
-        const removedA = removedAmountA ? BigInt(removedAmountA) : 0n;
-        const removedB = removedAmountB ? BigInt(removedAmountB) : 0n;
-        amountA = (removedA > 0n ? (removedA <= safeBalanceA ? removedA : safeBalanceA) : 0n).toString();
-        amountB = (removedB > 0n ? (removedB <= safeBalanceB ? removedB : safeBalanceB) : 0n).toString();
-        logger.info('Using removed position amounts for rebalance', { amountA, amountB });
       } else {
         amountA = this.config.tokenAAmount || String(safeBalanceA > 0n ? safeBalanceA / 10n : defaultMinAmount);
         amountB = this.config.tokenBAmount || String(safeBalanceB > 0n ? safeBalanceB / 10n : defaultMinAmount);
