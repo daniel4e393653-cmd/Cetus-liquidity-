@@ -228,7 +228,7 @@ export class SimpleRebalanceService {
         return;
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
-        logger.warn(`Remove liquidity attempt ${attempt + 1} failed`, lastError);
+        logger.error(`Remove liquidity attempt ${attempt + 1} failed: ${lastError.message}`, lastError);
         
         if (attempt < 1) {
           // Wait 2 seconds before retry
@@ -316,7 +316,7 @@ export class SimpleRebalanceService {
         return result.digest;
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
-        logger.warn(`Add liquidity attempt ${attempt + 1} failed`, lastError);
+        logger.error(`Add liquidity attempt ${attempt + 1} failed: ${lastError.message}`, lastError);
         
         if (attempt < 1) {
           // Wait 2 seconds before retry
