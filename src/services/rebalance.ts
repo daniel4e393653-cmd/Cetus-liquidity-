@@ -48,6 +48,102 @@ interface AddLiquidityFixTokenParams {
   rewarder_coin_types: string[];
 }
 
+// When no explicit amount is configured, default to deploying one-tenth of the
+// available safe balance to avoid draining the wallet in a single add.
+const BALANCE_FRACTION_DIVISOR = 10n;
+export type AmountSelectionSource = 'removed' | 'liquidity' | 'config';
+
+/**
+ * Cap a requested token amount to what is safely available.
+ * @param requested The desired token amount (may be zero or negative).
+ * @param available The safe amount available to spend.
+ * @returns The requested amount capped to the available balance, or 0 when the
+ *          request is non-positive.
+ */
+const capToSafeBalance = (requested: bigint, available: bigint): bigint => {
+  if (requested <= 0n) return 0n;
+  if (requested <= available) return requested;
+  return available > 0n ? available : 0n;
+};
+
+/**
+ * Decide which token amounts to add during a rebalance. Prefers the exact
+ * amounts freed from the existing position, falling back to liquidity-derived
+ * amounts, then configured/wallet amounts.
+ */
+export function selectRebalanceAmounts(params: {
+  poolInfo: PoolInfo;
+  tickLower: number;
+  tickUpper: number;
+  safeBalanceA: bigint;
+  safeBalanceB: bigint;
+  defaultMinAmount: bigint;
+  removedAmountA?: string;
+  removedAmountB?: string;
+  originalLiquidity?: string;
+  tokenAAmount?: string;
+  tokenBAmount?: string;
+}): { amountA: string; amountB: string; source: AmountSelectionSource } {
+  const {
+    poolInfo,
+    tickLower,
+    tickUpper,
+    safeBalanceA,
+    safeBalanceB,
+    defaultMinAmount,
+    removedAmountA,
+    removedAmountB,
+    originalLiquidity,
+    tokenAAmount,
+    tokenBAmount,
+  } = params;
+
+  const removedA = removedAmountA ? BigInt(removedAmountA) : 0n;
+  const removedB = removedAmountB ? BigInt(removedAmountB) : 0n;
+
+  // Proceed when at least one side freed a positive amount. Out-of-range
+  // positions can be single-sided; the missing side stays at 0 here to avoid
+  // pulling new wallet funds (a later swap will balance if needed). Both
+  // undefined values and explicit "0" strings are treated as no freed liquidity,
+  // so we fall back to liquidity-derived amounts when neither side freed tokens.
+  if (removedA > 0n || removedB > 0n) {
+    const amountA = capToSafeBalance(removedA, safeBalanceA).toString();
+    const amountB = capToSafeBalance(removedB, safeBalanceB).toString();
+    logger.info('Using removed position amounts for rebalance', { amountA, amountB });
+    return { amountA, amountB, source: 'removed' };
+  }
+
+  if (originalLiquidity && BigInt(originalLiquidity) > 0n) {
+    const liqBN = new BN(originalLiquidity);
+    const curSqrtPrice = new BN(poolInfo.currentSqrtPrice);
+    const lowerSqrtPrice = TickMath.tickIndexToSqrtPriceX64(tickLower);
+    const upperSqrtPrice = TickMath.tickIndexToSqrtPriceX64(tickUpper);
+    const required = ClmmPoolUtil.getCoinAmountFromLiquidity(
+      liqBN, curSqrtPrice, lowerSqrtPrice, upperSqrtPrice, true,
+    );
+    const reqA = BigInt(required.coinA.toString());
+    const reqB = BigInt(required.coinB.toString());
+    const amountA = capToSafeBalance(reqA, safeBalanceA).toString();
+    const amountB = capToSafeBalance(reqB, safeBalanceB).toString();
+    logger.info('Using amounts derived from original liquidity', {
+      originalLiquidity,
+      requiredA: reqA.toString(),
+      requiredB: reqB.toString(),
+      amountA,
+      amountB,
+    });
+    return { amountA, amountB, source: 'liquidity' };
+  }
+
+  const amountA = tokenAAmount ?? String(
+    safeBalanceA > 0n ? safeBalanceA / BALANCE_FRACTION_DIVISOR : defaultMinAmount,
+  );
+  const amountB = tokenBAmount ?? String(
+    safeBalanceB > 0n ? safeBalanceB / BALANCE_FRACTION_DIVISOR : defaultMinAmount,
+  );
+  return { amountA, amountB, source: 'config' };
+}
+
 export class RebalanceService {
   private sdkService: CetusSDKService;
   private monitorService: PositionMonitorService;
@@ -598,47 +694,21 @@ export class RebalanceService {
         ? balanceBBigInt - SUI_GAS_RESERVE
         : balanceBBigInt;
       
-      let amountA: string;
-      let amountB: string;
-      
-      if (originalLiquidity && BigInt(originalLiquidity) > 0n) {
-        // Rebalancing with known liquidity: compute the exact token amounts
-        // required to reconstruct the same liquidity value at the new tick range.
-        // This ensures the new position carries the same leverage and liquidity
-        // as the original, regardless of the tick range shift.
-        const liqBN = new BN(originalLiquidity);
-        const curSqrtPrice = new BN(poolInfo.currentSqrtPrice);
-        const lowerSqrtPrice = TickMath.tickIndexToSqrtPriceX64(tickLower);
-        const upperSqrtPrice = TickMath.tickIndexToSqrtPriceX64(tickUpper);
-        const required = ClmmPoolUtil.getCoinAmountFromLiquidity(
-          liqBN, curSqrtPrice, lowerSqrtPrice, upperSqrtPrice, true,
-        );
-        const reqA = BigInt(required.coinA.toString());
-        const reqB = BigInt(required.coinB.toString());
-        // Cap at safe wallet balance so we don't overdraw (e.g. gas consumed SUI)
-        amountA = (reqA <= safeBalanceA ? reqA : safeBalanceA > 0n ? safeBalanceA : 0n).toString();
-        amountB = (reqB <= safeBalanceB ? reqB : safeBalanceB > 0n ? safeBalanceB : 0n).toString();
-        logger.info('Using amounts derived from original liquidity', {
-          originalLiquidity,
-          requiredA: reqA.toString(),
-          requiredB: reqB.toString(),
-          amountA,
-          amountB,
-        });
-      } else if (removedAmountA || removedAmountB) {
-        // Fallback: use exactly the token amounts freed from the old position.
-        // For out-of-range positions one token may be 0 — keep it as 0 and let
-        // the swap logic below convert half of the non-zero token.
-        // Cap at safe balance to handle gas-cost deductions.
-        const removedA = removedAmountA ? BigInt(removedAmountA) : 0n;
-        const removedB = removedAmountB ? BigInt(removedAmountB) : 0n;
-        amountA = (removedA > 0n ? (removedA <= safeBalanceA ? removedA : safeBalanceA) : 0n).toString();
-        amountB = (removedB > 0n ? (removedB <= safeBalanceB ? removedB : safeBalanceB) : 0n).toString();
-        logger.info('Using removed position amounts for rebalance', { amountA, amountB });
-      } else {
-        amountA = this.config.tokenAAmount || String(safeBalanceA > 0n ? safeBalanceA / 10n : defaultMinAmount);
-        amountB = this.config.tokenBAmount || String(safeBalanceB > 0n ? safeBalanceB / 10n : defaultMinAmount);
-      }
+      const selectedAmounts = selectRebalanceAmounts({
+        poolInfo,
+        tickLower,
+        tickUpper,
+        safeBalanceA,
+        safeBalanceB,
+        defaultMinAmount,
+        removedAmountA,
+        removedAmountB,
+        originalLiquidity,
+        tokenAAmount: this.config.tokenAAmount,
+        tokenBAmount: this.config.tokenBAmount,
+      });
+      let amountA = selectedAmounts.amountA;
+      let amountB = selectedAmounts.amountB;
 
       // When one token has zero balance or the wallet is short on one token
       // (common after removing an out-of-range position that was fully

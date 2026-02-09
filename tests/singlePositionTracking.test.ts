@@ -1,5 +1,6 @@
 import assert from 'assert';
 import { PositionMonitorService } from '../src/services/monitor';
+import { selectRebalanceAmounts } from '../src/services/rebalance';
 import { BotConfig } from '../src/config';
 
 /**
@@ -106,6 +107,36 @@ function computeRebalanceAmounts(
   assert.strictEqual(amountA, '2000', 'must re-add exactly what was freed for A');
   assert.strictEqual(amountB, '3000', 'must re-add exactly what was freed for B');
   console.log('✔ exact amounts: wallet has much more but only freed amounts used');
+}
+
+// 1b. Freed amounts must win even when liquidity-derived estimates exist
+// in the rebalance implementation.
+{
+  const poolInfo = {
+    poolAddress: STUB_POOL_ADDRESS,
+    currentTickIndex: 1000,
+    currentSqrtPrice: '79228162514264337593543950336', // 2^96 (price = 1.0)
+    coinTypeA: '0xA',
+    coinTypeB: '0xB',
+    tickSpacing: 60,
+  };
+  const { amountA, amountB, source } = selectRebalanceAmounts({
+    poolInfo,
+    tickLower: 600,
+    tickUpper: 1200,
+    safeBalanceA: 5_000_000n,
+    safeBalanceB: 4_000_000n,
+    defaultMinAmount: 1_000n,
+    removedAmountA: '2000',
+    removedAmountB: '3000',
+    originalLiquidity: '123456',
+    tokenAAmount: undefined,
+    tokenBAmount: undefined,
+  });
+  assert.strictEqual(source, 'removed', 'freed amounts must be prioritized over liquidity estimates');
+  assert.strictEqual(amountA, '2000');
+  assert.strictEqual(amountB, '3000');
+  console.log('✔ selectRebalanceAmounts prioritizes freed amounts over liquidity estimates');
 }
 
 // 2. Single-sided (all in token B) → token A stays 0, not wallet balance.
