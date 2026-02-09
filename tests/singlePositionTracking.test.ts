@@ -115,7 +115,7 @@ function computeRebalanceAmounts(
   const poolInfo = {
     poolAddress: STUB_POOL_ADDRESS,
     currentTickIndex: 1000,
-    currentSqrtPrice: '79228162514264337593543950336', // 2^96
+    currentSqrtPrice: '79228162514264337593543950336', // 2^96 (price = 1.0)
     coinTypeA: '0xA',
     coinTypeB: '0xB',
     tickSpacing: 60,

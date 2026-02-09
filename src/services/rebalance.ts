@@ -103,9 +103,9 @@ export function selectRebalanceAmounts(params: {
 
   // Proceed when at least one side freed a positive amount. Out-of-range
   // positions can be single-sided; the missing side stays at 0 here to avoid
-  // pulling new wallet funds (a later swap will balance if needed).
-  // Explicit "0" strings are treated as no freed liquidity so we fall back to
-  // liquidity-derived amounts when both sides freed nothing.
+  // pulling new wallet funds (a later swap will balance if needed). Both
+  // undefined values and explicit "0" strings are treated as no freed liquidity,
+  // so we fall back to liquidity-derived amounts when neither side freed tokens.
   if (removedA > 0n || removedB > 0n) {
     const amountA = capToSafeBalance(removedA, safeBalanceA).toString();
     const amountB = capToSafeBalance(removedB, safeBalanceB).toString();
