@@ -664,7 +664,7 @@ export class RebalanceService {
         if (secondVerify.data && secondVerify.data.length > 1) {
           throw new Error(
             `Coin merge failed to consolidate ${coinType}. Expected 1 coin object but found ${secondVerify.data.length} after waiting ${COIN_MERGE_FINALITY_DELAY_MS * 2}ms total. ` +
-            `This indicates network propagation issues or concurrent transactions. Please retry later.`
+            `This indicates network propagation issues or concurrent transactions.`
           );
         }
         
@@ -716,7 +716,8 @@ export class RebalanceService {
         
         // MoveAbort error 0 in repay_add_liquidity indicates coin fragmentation
         // or stale coin references despite merging attempts.
-        const isMoveAbortError0 = /MoveAbort.*repay_add_liquidity.*,\s*0\)/i.test(errorMsg);
+        // Pattern matches error format: MoveAbort...repay_add_liquidity..., 0)
+        const isMoveAbortError0 = /MoveAbort.*repay_add_liquidity.*,\s*0\s*\)/i.test(errorMsg);
         
         if (!isStaleObject && !isPendingTx && !isMoveAbortError0) {
           // Non-retryable error, throw immediately
