@@ -4,6 +4,10 @@ import { BotConfig } from '../config';
 import { logger } from '../utils/logger';
 import { Transaction } from '@mysten/sui/transactions';
 
+// Delay constants for coin merging
+const COIN_MERGE_FINALITY_DELAY_MS = 5000; // Wait for transaction to be finalized
+const COIN_MERGE_PROPAGATION_DELAY_MS = 2000; // Wait for SDK to see merged coins
+
 export interface RebalanceResult {
   success: boolean;
   transactionDigest?: string;
@@ -260,29 +264,39 @@ export class SimpleRebalanceService {
     const amountA = this.config.tokenAAmount!;
     const amountB = this.config.tokenBAmount!;
 
-    // Create open position (new position)
-    const openPositionPayload = await sdk.Position.createAddLiquidityFixTokenPayload({
-      pool_id: poolInfo.poolAddress,
-      pos_id: '', // Empty string for new position
-      tick_lower: tickLower,
-      tick_upper: tickUpper,
-      amount_a: amountA,
-      amount_b: amountB,
-      slippage: this.config.maxSlippage,
-      fix_amount_a: true,
-      is_open: true, // Create new position
-      coinTypeA: poolInfo.coinTypeA,
-      coinTypeB: poolInfo.coinTypeB,
-      collect_fee: false,
-      rewarder_coin_types: [],
-    } as AddLiquidityFixTokenParams);
-
-    openPositionPayload.setGasBudget(this.config.gasBudget);
-
     // Execute transaction with simple retry (2 attempts)
     let lastError: Error | undefined;
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
+        // Merge coins before add liquidity to prevent MoveAbort error 0 in repay_add_liquidity.
+        logger.debug('Merging coin objects before add liquidity transaction attempt');
+        await this.mergeCoins(poolInfo.coinTypeA);
+        await this.mergeCoins(poolInfo.coinTypeB);
+
+        // Additional safety delay to ensure all coin merges are fully propagated
+        // before the SDK creates the add liquidity transaction payload.
+        logger.debug('Waiting for coin merge propagation before creating add liquidity payload...');
+        await new Promise(resolve => setTimeout(resolve, COIN_MERGE_PROPAGATION_DELAY_MS));
+
+        // Create open position (new position)
+        const openPositionPayload = await sdk.Position.createAddLiquidityFixTokenPayload({
+          pool_id: poolInfo.poolAddress,
+          pos_id: '', // Empty string for new position
+          tick_lower: tickLower,
+          tick_upper: tickUpper,
+          amount_a: amountA,
+          amount_b: amountB,
+          slippage: this.config.maxSlippage,
+          fix_amount_a: true,
+          is_open: true, // Create new position
+          coinTypeA: poolInfo.coinTypeA,
+          coinTypeB: poolInfo.coinTypeB,
+          collect_fee: false,
+          rewarder_coin_types: [],
+        } as AddLiquidityFixTokenParams);
+
+        openPositionPayload.setGasBudget(this.config.gasBudget);
+
         const result = await suiClient.signAndExecuteTransaction({
           transaction: openPositionPayload,
           signer: keypair,
@@ -312,5 +326,109 @@ export class SimpleRebalanceService {
     }
 
     throw lastError || new Error('Add liquidity failed after retries');
+  }
+
+  /**
+   * Merge all coin objects of a given type into a single coin.
+   * This prevents MoveAbort error 0 in repay_add_liquidity caused by fragmented coin balances.
+   */
+  private async mergeCoins(coinType: string): Promise<void> {
+    try {
+      const suiClient = this.sdkService.getSuiClient();
+      const keypair = this.sdkService.getKeypair();
+      const ownerAddress = this.sdkService.getAddress();
+
+      // Get all coin objects for this coin type
+      const allCoins = await suiClient.getCoins({
+        owner: ownerAddress,
+        coinType,
+      });
+
+      if (!allCoins.data || allCoins.data.length <= 1) {
+        // No merging needed if there's 0 or 1 coin object
+        logger.debug(`No coin merging needed for ${coinType} (${allCoins.data?.length || 0} coin objects)`);
+        return;
+      }
+
+      // Sort coins by balance (largest first) to use the largest as primary
+      const sortedCoins = allCoins.data.sort((a, b) => {
+        const balanceA = BigInt(a.balance);
+        const balanceB = BigInt(b.balance);
+        return balanceB > balanceA ? 1 : balanceB < balanceA ? -1 : 0;
+      });
+
+      const primaryCoin = sortedCoins[0];
+      const coinsToMerge = sortedCoins.slice(1).map(coin => coin.coinObjectId);
+
+      logger.info(`Merging ${coinsToMerge.length} coin objects into primary coin for ${coinType}`, {
+        primaryCoinId: primaryCoin.coinObjectId,
+        primaryBalance: primaryCoin.balance,
+        coinsToMerge: coinsToMerge.length,
+      });
+
+      // Create a transaction to merge all coins into the primary coin
+      const tx = new Transaction();
+      tx.mergeCoins(
+        tx.object(primaryCoin.coinObjectId),
+        coinsToMerge.map(id => tx.object(id))
+      );
+      
+      // Set sender address for proper gas coin selection
+      tx.setSender(ownerAddress);
+      
+      // Set gas budget
+      tx.setGasBudget(this.config.gasBudget);
+
+      // Execute the merge transaction
+      const result = await suiClient.signAndExecuteTransaction({
+        transaction: tx,
+        signer: keypair,
+        options: {
+          showEffects: true,
+          showObjectChanges: true,
+        },
+      });
+
+      if (result.effects?.status?.status !== 'success') {
+        throw new Error(`Failed to merge coins: ${result.effects?.status?.error || 'Unknown error'}`);
+      }
+
+      logger.info(`Successfully merged coins for ${coinType}`, {
+        digest: result.digest,
+      });
+
+      // Wait for transaction to be finalized and coin object to be available.
+      // Without this delay, the SDK may attempt to use stale coin object references,
+      // leading to MoveAbort error 0 in repay_add_liquidity.
+      await new Promise(resolve => setTimeout(resolve, COIN_MERGE_FINALITY_DELAY_MS));
+
+      // Verify the merge was successful by checking that coins are now consolidated
+      const verifyCoins = await suiClient.getCoins({
+        owner: ownerAddress,
+        coinType,
+      });
+
+      if (verifyCoins.data && verifyCoins.data.length > 1) {
+        // If still fragmented, wait additional time for propagation
+        logger.warn(`Coins still fragmented after merge (${verifyCoins.data.length} objects), waiting for propagation...`);
+        await new Promise(resolve => setTimeout(resolve, COIN_MERGE_FINALITY_DELAY_MS));
+        
+        // Second verification
+        const secondVerify = await suiClient.getCoins({
+          owner: ownerAddress,
+          coinType,
+        });
+        
+        if (secondVerify.data && secondVerify.data.length > 1) {
+          logger.warn(
+            `Coin merge failed to consolidate ${coinType}. Expected 1 coin object but found ${secondVerify.data.length}. ` +
+            `This may cause MoveAbort errors in subsequent transactions.`
+          );
+        }
+      }
+    } catch (error) {
+      logger.error(`Failed to merge coins for ${coinType}`, error);
+      throw error;
+    }
   }
 }
