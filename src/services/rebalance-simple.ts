@@ -59,16 +59,8 @@ export class SimpleRebalanceService {
     this.monitorService = monitorService;
     this.config = config;
 
-    // Validate that position ID is configured for simple mode
-    if (!config.positionId) {
-      throw new Error('POSITION_ID must be configured for simple rebalance bot');
-    }
-
-    // Validate that token amounts are configured
-    if (!config.tokenAAmount || !config.tokenBAmount) {
-      throw new Error('TOKEN_A_AMOUNT and TOKEN_B_AMOUNT must be configured for simple rebalance bot');
-    }
-
+    // Note: Required fields (positionId, tokenAAmount, tokenBAmount) are validated at config load time
+    
     logger.info('Simple Rebalance Service initialized', {
       positionId: config.positionId,
       tokenAAmount: config.tokenAAmount,

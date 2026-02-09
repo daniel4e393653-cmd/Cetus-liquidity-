@@ -51,10 +51,29 @@ function getEnvBoolean(key: string, defaultValue: boolean): boolean {
 }
 
 export function loadConfig(): BotConfig {
+  // Collect all missing required environment variables
+  const missingVars: string[] = [];
+  
   const network = getEnvVar('NETWORK', false) || 'mainnet';
   
   if (network !== 'mainnet' && network !== 'testnet') {
     throw new Error(`Invalid NETWORK value: ${network}. Must be 'mainnet' or 'testnet'`);
+  }
+
+  // Check all required variables without throwing immediately
+  if (!process.env.PRIVATE_KEY) missingVars.push('PRIVATE_KEY');
+  if (!process.env.POOL_ADDRESS) missingVars.push('POOL_ADDRESS');
+  if (!process.env.POSITION_ID) missingVars.push('POSITION_ID');
+  if (!process.env.TOKEN_A_AMOUNT) missingVars.push('TOKEN_A_AMOUNT');
+  if (!process.env.TOKEN_B_AMOUNT) missingVars.push('TOKEN_B_AMOUNT');
+
+  // If any required variables are missing, throw a comprehensive error
+  if (missingVars.length > 0) {
+    throw new Error(
+      `Missing required environment variables: ${missingVars.join(', ')}\n` +
+      `Please create a .env file from .env.example and configure these variables.\n` +
+      `See README.md for configuration instructions.`
+    );
   }
 
   const privateKey = getEnvVar('PRIVATE_KEY');
