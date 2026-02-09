@@ -6,7 +6,7 @@ import { Transaction } from '@mysten/sui/transactions';
 
 // Delay constants for coin merging
 const COIN_MERGE_FINALITY_DELAY_MS = 5000; // Wait for transaction to be finalized
-const COIN_MERGE_PROPAGATION_DELAY_MS = 2000; // Wait for SDK to see merged coins
+const COIN_MERGE_PROPAGATION_DELAY_MS = 5000; // Wait for SDK to see merged coins (increased from 2000ms)
 
 export interface RebalanceResult {
   success: boolean;
@@ -264,19 +264,21 @@ export class SimpleRebalanceService {
     const amountA = this.config.tokenAAmount!;
     const amountB = this.config.tokenBAmount!;
 
+    // Merge coins ONCE before all retry attempts to prevent MoveAbort error 0 in repay_add_liquidity.
+    // This ensures coins are consolidated before we attempt any add liquidity transactions.
+    logger.debug('Merging coin objects before add liquidity transaction');
+    await this.mergeCoins(poolInfo.coinTypeA);
+    await this.mergeCoins(poolInfo.coinTypeB);
+
+    // Additional safety delay to ensure all coin merges are fully propagated
+    // before the SDK creates the add liquidity transaction payload.
+    logger.debug('Waiting for coin merge propagation before creating add liquidity payload...');
+    await new Promise(resolve => setTimeout(resolve, COIN_MERGE_PROPAGATION_DELAY_MS));
+
     // Execute transaction with simple retry (2 attempts)
     let lastError: Error | undefined;
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        // Merge coins before add liquidity to prevent MoveAbort error 0 in repay_add_liquidity.
-        logger.debug('Merging coin objects before add liquidity transaction attempt');
-        await this.mergeCoins(poolInfo.coinTypeA);
-        await this.mergeCoins(poolInfo.coinTypeB);
-
-        // Additional safety delay to ensure all coin merges are fully propagated
-        // before the SDK creates the add liquidity transaction payload.
-        logger.debug('Waiting for coin merge propagation before creating add liquidity payload...');
-        await new Promise(resolve => setTimeout(resolve, COIN_MERGE_PROPAGATION_DELAY_MS));
 
         // Create open position (new position)
         const openPositionPayload = await sdk.Position.createAddLiquidityFixTokenPayload({
