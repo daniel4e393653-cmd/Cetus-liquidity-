@@ -642,6 +642,9 @@ export class RebalanceService {
         coinsToMerge.map(id => tx.object(id))
       );
       
+      // Set sender address for proper gas coin selection
+      tx.setSender(ownerAddress);
+      
       // Set gas budget
       tx.setGasBudget(this.config.gasBudget);
 
@@ -1330,6 +1333,9 @@ export class RebalanceService {
               ],
             });
           }
+          
+          // Set sender address for proper gas coin selection
+          tx.setSender(ownerAddress);
           
           // Set gas budget
           tx.setGasBudget(this.config.gasBudget);
