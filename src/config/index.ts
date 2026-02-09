@@ -8,10 +8,18 @@ const envExamplePath = path.join(process.cwd(), '.env.example');
 
 if (!fs.existsSync(envPath)) {
   if (fs.existsSync(envExamplePath)) {
-    console.log('\n⚠️  No .env file found. Creating one from .env.example...');
-    fs.copyFileSync(envExamplePath, envPath);
-    console.log('✅ .env file created. Please edit it with your configuration.');
-    console.log('📝 Required settings: PRIVATE_KEY, POOL_ADDRESS, POSITION_ID, TOKEN_A_AMOUNT, TOKEN_B_AMOUNT\n');
+    try {
+      console.log('\n⚠️  No .env file found. Creating one from .env.example...');
+      fs.copyFileSync(envExamplePath, envPath);
+      console.log('✅ .env file created. Please edit it with your configuration.');
+      console.log('📝 Required settings: PRIVATE_KEY, POOL_ADDRESS, POSITION_ID, TOKEN_A_AMOUNT, TOKEN_B_AMOUNT');
+      console.log('⚠️  The application will not work until you configure these values.\n');
+    } catch (error) {
+      console.error('\n❌ Error: Failed to create .env file!');
+      console.error(`Details: ${error instanceof Error ? error.message : String(error)}`);
+      console.error('Please check file permissions and try creating the file manually.\n');
+      process.exit(1);
+    }
   } else {
     console.error('\n❌ Error: Neither .env nor .env.example file found!');
     console.error('Please make sure you are running this from the project root directory.\n');
