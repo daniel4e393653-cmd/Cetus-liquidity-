@@ -504,6 +504,9 @@ export class RebalanceService {
 
           const removeLiquidityPayload = await sdk.Position.removeLiquidityTransactionPayload(params as any);
           
+          // Set gas budget explicitly to avoid "could not automatically determine a budget" error
+          removeLiquidityPayload.setGasBudget(this.config.gasBudget);
+          
           const txResult = await suiClient.signAndExecuteTransaction({
             transaction: removeLiquidityPayload,
             signer: keypair,
@@ -662,6 +665,9 @@ export class RebalanceService {
       coinTypeA: poolInfo.coinTypeA,
       coinTypeB: poolInfo.coinTypeB,
     });
+
+    // Set gas budget explicitly to avoid "could not automatically determine a budget" error
+    swapPayload.setGasBudget(this.config.gasBudget);
 
     const result = await suiClient.signAndExecuteTransaction({
       transaction: swapPayload,
@@ -1041,6 +1047,9 @@ export class RebalanceService {
               curSqrtPrice: currentSqrtPrice,
             }
           );
+          
+          // Set gas budget explicitly to avoid "could not automatically determine a budget" error
+          addLiquidityPayload.setGasBudget(this.config.gasBudget);
           
           const result = await suiClient.signAndExecuteTransaction({
             transaction: addLiquidityPayload,
