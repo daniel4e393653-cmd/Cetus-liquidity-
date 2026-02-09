@@ -24,7 +24,7 @@ export class CetusRebalanceBot {
       config
     );
 
-    logger.info('Simple Bot initialized successfully', {
+    logger.info('Simple Bot initialized', {
       network: config.network,
       address: this.sdkService.getAddress(),
       poolAddress: config.poolAddress,
@@ -39,13 +39,11 @@ export class CetusRebalanceBot {
       return;
     }
 
-    logger.info('Initializing Simple Cetus Rebalance Bot...');
-
     // Validate environment setup before starting
     await this.validateSetup();
 
     this.isRunning = true;
-    logger.info('Simple Bot started successfully');
+    logger.info('Bot started successfully');
 
     // Perform initial check
     await this.performCheck();
@@ -102,7 +100,7 @@ export class CetusRebalanceBot {
         throw new Error('Invalid pool configuration. Please check POOL_ADDRESS in .env file.');
       }
 
-      // Validate the configured position exists
+      // Validate the configured position exists (validated again in service constructor for safety)
       if (!config.positionId) {
         throw new Error('POSITION_ID is required for simple rebalance bot. Please configure it in .env file.');
       }
@@ -127,7 +125,7 @@ export class CetusRebalanceBot {
         throw error;
       }
 
-      // Validate token amounts are configured
+      // Validate token amounts are configured (validated again in service constructor for safety)
       if (!config.tokenAAmount || !config.tokenBAmount) {
         throw new Error('TOKEN_A_AMOUNT and TOKEN_B_AMOUNT must be configured. Please set them in .env file.');
       }

@@ -18,6 +18,23 @@ export interface RebalanceResult {
   };
 }
 
+// Type definitions for SDK parameters
+interface AddLiquidityFixTokenParams {
+  pool_id: string;
+  pos_id: string; // Empty string when opening a new position
+  tick_lower: number;
+  tick_upper: number;
+  amount_a: string;
+  amount_b: string;
+  slippage: number;
+  fix_amount_a: boolean;
+  is_open: boolean;
+  coinTypeA: string;
+  coinTypeB: string;
+  collect_fee: boolean;
+  rewarder_coin_types: string[];
+}
+
 /**
  * Simple Rebalance Service
  * 
@@ -130,7 +147,7 @@ export class SimpleRebalanceService {
       });
 
       // Step 1: Remove liquidity from old position (if it has liquidity)
-      const hasLiquidity = position.liquidity != null && BigInt(position.liquidity) > 0n;
+      const hasLiquidity = position.liquidity && BigInt(position.liquidity) > 0n;
       
       if (hasLiquidity) {
         await this.removeLiquidity(position.positionId, position.liquidity);
@@ -254,6 +271,7 @@ export class SimpleRebalanceService {
     // Create open position (new position)
     const openPositionPayload = await sdk.Position.createAddLiquidityFixTokenPayload({
       pool_id: poolInfo.poolAddress,
+      pos_id: '', // Empty string for new position
       tick_lower: tickLower,
       tick_upper: tickUpper,
       amount_a: amountA,
@@ -265,7 +283,7 @@ export class SimpleRebalanceService {
       coinTypeB: poolInfo.coinTypeB,
       collect_fee: false,
       rewarder_coin_types: [],
-    } as any);
+    } as AddLiquidityFixTokenParams);
 
     openPositionPayload.setGasBudget(this.config.gasBudget);
 

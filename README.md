@@ -1,6 +1,6 @@
 # Cetus Liquidity Simple Rebalance Bot
 
-A simple automatic liquidity rebalancing bot for Cetus Protocol on the Sui Network. This bot monitors a single liquidity position and automatically rebalances it when the market price moves outside your specified range.
+A simple automatic liquidity rebalancing bot for Cetus Protocol on the Sui Network. This bot monitors a single liquidity position and automatically rebalances it when the market price moves outside the optimal range.
 
 ## Features
 
