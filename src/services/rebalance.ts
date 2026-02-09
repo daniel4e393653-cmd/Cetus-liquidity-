@@ -48,7 +48,7 @@ interface AddLiquidityFixTokenParams {
   rewarder_coin_types: string[];
 }
 
-// When no explicit amount is configured, default to deploying ~10% of the
+// When no explicit amount is configured, default to deploying one-tenth of the
 // available safe balance to avoid draining the wallet in a single add.
 const BALANCE_FRACTION_DIVISOR = 10n;
 export type AmountSelectionSource = 'removed' | 'liquidity' | 'config';
@@ -102,8 +102,8 @@ export function selectRebalanceAmounts(params: {
   const removedB = removedAmountB ? BigInt(removedAmountB) : 0n;
 
   // Proceed when at least one side freed a positive amount. Out-of-range
-  // positions can be single-sided; keep the missing side at 0 to avoid pulling
-  // new wallet funds (a later swap will balance if needed).
+  // positions can be single-sided; the missing side stays at 0 here to avoid
+  // pulling new wallet funds (a later swap will balance if needed).
   if (removedA > 0n || removedB > 0n) {
     const amountA = capToSafeBalance(removedA, safeBalanceA).toString();
     const amountB = capToSafeBalance(removedB, safeBalanceB).toString();
