@@ -175,10 +175,16 @@ export function chooseFixedToken(amountA: string, amountB: string): boolean {
   const amountABigInt = BigInt(amountA);
   const amountBBigInt = BigInt(amountB);
 
-  if (amountABigInt === 0n && amountBBigInt > 0n) return false; // fix B
-  if (amountBBigInt === 0n && amountABigInt > 0n) return true;  // fix A
+  if (amountABigInt === 0n && amountBBigInt === 0n) {
+    throw new Error('Cannot choose fixed token when both amounts are zero');
+  }
+  if (amountABigInt === 0n) return false; // fix B
+  if (amountBBigInt === 0n) return true;  // fix A
 
-  // Fix the scarcer token (smaller amount) to stay within the existing budget
+  // Fix the scarcer token (smaller amount) to stay within the existing budget.
+  // Fixing the larger side can cause the SDK to compute a counterparty amount
+  // that exceeds the freed liquidity (triggering repay_add_liquidity aborts),
+  // so we intentionally anchor on the limiting token.
   return amountABigInt <= amountBBigInt;
 }
 

@@ -199,6 +199,13 @@ function computeRebalanceAmounts(
   assert.strictEqual(chooseFixedToken('100', '500'), true, 'fix scarce token A');
   // Token B scarce → fixAmountA should be false
   assert.strictEqual(chooseFixedToken('8000', '4000'), false, 'fix scarce token B');
+  // Large realistic amounts (BigInt-safe)
+  assert.strictEqual(chooseFixedToken('1230000000000', '4560000000000'), true, 'fix scarce large token A');
+  assert.strictEqual(chooseFixedToken('9876543210000', '123456789000'), false, 'fix scarce large token B');
+  // Zero-handling branches
+  assert.strictEqual(chooseFixedToken('0', '250'), false, 'when A is zero, fix B');
+  assert.strictEqual(chooseFixedToken('750', '0'), true, 'when B is zero, fix A');
+  assert.throws(() => chooseFixedToken('0', '0'), /both amounts are zero/, 'both zero should throw');
   console.log('✔ fix token selection uses scarce token as budget anchor');
 }
 
