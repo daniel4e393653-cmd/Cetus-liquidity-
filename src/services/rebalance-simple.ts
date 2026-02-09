@@ -420,11 +420,15 @@ export class SimpleRebalanceService {
         });
         
         if (secondVerify.data && secondVerify.data.length > 1) {
-          logger.warn(
-            `Coin merge failed to consolidate ${coinType}. Expected 1 coin object but found ${secondVerify.data.length}. ` +
-            `This may cause MoveAbort errors in subsequent transactions.`
+          throw new Error(
+            `Coin merge failed to consolidate ${coinType}. Expected 1 coin object but found ${secondVerify.data.length} after waiting ${COIN_MERGE_FINALITY_DELAY_MS * 2}ms total. ` +
+            `This indicates network propagation issues or concurrent transactions.`
           );
         }
+        
+        logger.info(`After additional wait, ${coinType} now has ${secondVerify.data?.length || 0} coin object(s)`);
+      } else {
+        logger.debug(`After merge verification: ${coinType} now has ${verifyCoins.data?.length || 0} coin object(s)`);
       }
     } catch (error) {
       logger.error(`Failed to merge coins for ${coinType}`, error);
