@@ -575,9 +575,11 @@ export class RebalanceService {
       }
 
       // Sort coins by balance (largest first) to use the largest as primary
-      const sortedCoins = allCoins.data.sort((a, b) => 
-        Number(BigInt(b.balance) - BigInt(a.balance))
-      );
+      const sortedCoins = allCoins.data.sort((a, b) => {
+        const balanceA = BigInt(a.balance);
+        const balanceB = BigInt(b.balance);
+        return balanceB > balanceA ? 1 : balanceB < balanceA ? -1 : 0;
+      });
 
       const primaryCoin = sortedCoins[0];
       const coinsToMerge = sortedCoins.slice(1).map(coin => coin.coinObjectId);
@@ -593,7 +595,10 @@ export class RebalanceService {
       
       // Create a transaction to merge all coins into the primary coin
       const tx = new Transaction();
-      tx.mergeCoins(primaryCoin.coinObjectId, coinsToMerge);
+      tx.mergeCoins(
+        tx.object(primaryCoin.coinObjectId),
+        coinsToMerge.map(id => tx.object(id))
+      );
       
       // Set gas budget
       tx.setGasBudget(this.config.gasBudget);
