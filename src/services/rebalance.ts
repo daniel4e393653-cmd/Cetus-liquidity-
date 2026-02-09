@@ -3,7 +3,8 @@ import { PositionMonitorService, PoolInfo, PositionInfo } from './monitor';
 import { BotConfig } from '../config';
 import { logger } from '../utils/logger';
 import BN from 'bn.js';
-import { TickMath, ClmmPoolUtil } from '@cetusprotocol/cetus-sui-clmm-sdk';
+import { TickMath, ClmmPoolUtil, asUintN } from '@cetusprotocol/cetus-sui-clmm-sdk';
+import { Transaction } from '@mysten/sui/transactions';
 
 type BalanceResult = Awaited<ReturnType<ReturnType<CetusSDKService['getSuiClient']>['getBalance']>>;
 
@@ -565,6 +566,35 @@ export class RebalanceService {
   }
 
   /**
+   * Get the primary coin object ID for a given coin type.
+   * After merging, this returns the single coin object that contains all balance.
+   * If there are multiple coins, returns the one with the largest balance.
+   * @returns The coin object ID, or undefined if no coins exist
+   */
+  private async getPrimaryCoinObjectId(coinType: string): Promise<string | undefined> {
+    const suiClient = this.sdkService.getSuiClient();
+    const ownerAddress = this.sdkService.getAddress();
+
+    const allCoins = await suiClient.getCoins({
+      owner: ownerAddress,
+      coinType,
+    });
+
+    if (!allCoins.data || allCoins.data.length === 0) {
+      return undefined;
+    }
+
+    // Return the coin with the largest balance (descending order)
+    const sortedCoins = allCoins.data.sort((a, b) => {
+      const balanceA = BigInt(a.balance);
+      const balanceB = BigInt(b.balance);
+      return balanceB > balanceA ? 1 : balanceB < balanceA ? -1 : 0;
+    });
+
+    return sortedCoins[0].coinObjectId;
+  }
+
+  /**
    * Merges all coin objects of a given coin type into a single primary coin.
    * This is necessary because Sui's object model can fragment coin balances,
    * and the Cetus SDK requires properly merged coins before executing transactions.
@@ -604,8 +634,6 @@ export class RebalanceService {
         coinsToMerge: coinsToMerge.length,
       });
 
-      // Import Transaction from @mysten/sui
-      const { Transaction } = await import('@mysten/sui/transactions');
       
       // Create a transaction to merge all coins into the primary coin
       const tx = new Transaction();
@@ -1208,45 +1236,117 @@ export class RebalanceService {
             );
           }
 
-          fixAmountA = chooseFixedToken(amountA, amountB);
-          const addLiquidityParams: AddLiquidityFixTokenParams = {
-            pool_id: poolInfo.poolAddress,
-            pos_id: positionId,
-            tick_lower: tickLower,
-            tick_upper: tickUpper,
-            amount_a: amountA,
-            amount_b: amountB,
-            slippage: this.config.maxSlippage,
-            fix_amount_a: fixAmountA,
-            is_open: isOpen,
-            coinTypeA: poolInfo.coinTypeA,
-            coinTypeB: poolInfo.coinTypeB,
-            collect_fee: false,
-            rewarder_coin_types: [],
-          };
-          
           // Refetch pool state on each retry to get latest version
           const pool = await sdk.Pool.getPool(poolInfo.poolAddress);
           const currentSqrtPrice = new BN(pool.current_sqrt_price);
           
-          // Use createAddLiquidityFixTokenPayload which handles liquidity calculation
-          const addLiquidityPayload = await sdk.Position.createAddLiquidityFixTokenPayload(
-            addLiquidityParams as any,
-            {
-              slippage: this.config.maxSlippage,
-              curSqrtPrice: currentSqrtPrice,
-            }
+          // Get primary coin objects after merge
+          const coinObjectIdA = await this.getPrimaryCoinObjectId(poolInfo.coinTypeA);
+          const coinObjectIdB = await this.getPrimaryCoinObjectId(poolInfo.coinTypeB);
+          
+          if (!coinObjectIdA || !coinObjectIdB) {
+            throw new Error(`Missing coin objects after merge. A: ${coinObjectIdA}, B: ${coinObjectIdB}`);
+          }
+          
+          logger.debug('Using coin objects for add liquidity', {
+            coinObjectIdA,
+            coinObjectIdB,
+            amountA,
+            amountB,
+          });
+          
+          // Calculate liquidity using SDK's utility function
+          fixAmountA = chooseFixedToken(amountA, amountB);
+          const coinAmount = fixAmountA ? amountA : amountB;
+          const liquidityResult = ClmmPoolUtil.estLiquidityAndcoinAmountFromOneAmounts(
+            tickLower,
+            tickUpper,
+            new BN(coinAmount),
+            fixAmountA,
+            true, // roundUp
+            this.config.maxSlippage,
+            currentSqrtPrice
           );
           
-          // Set gas budget explicitly to avoid "could not automatically determine a budget" error
-          addLiquidityPayload.setGasBudget(this.config.gasBudget);
+          const deltaLiquidity = liquidityResult.liquidityAmount.toString();
+          const maxAmountA = liquidityResult.tokenMaxA.toString();
+          const maxAmountB = liquidityResult.tokenMaxB.toString();
+          
+          logger.debug('Calculated liquidity parameters', {
+            deltaLiquidity,
+            maxAmountA,
+            maxAmountB,
+            fixAmountA,
+          });
+          
+          // Build raw Move call transaction
+          const tx = new Transaction();
+          
+          // Get SDK configuration for contract addresses
+          const sdkOptions = sdk.sdkOptions;
+          const clmmConfig = sdkOptions.clmm_pool?.config;
+          const integratePackage = sdkOptions.integrate.published_at;
+          
+          if (!clmmConfig) {
+            throw new Error('CLMM pool configuration is not available in SDK options');
+          }
+          
+          // CLOCK_ADDRESS is a standard Sui address for the clock object
+          const CLOCK_ADDRESS = '0x6';
+          
+          if (isOpen) {
+            // Open new position with liquidity
+            tx.moveCall({
+              target: `${integratePackage}::pool_script_v2::open_position_with_liquidity`,
+              typeArguments: [poolInfo.coinTypeA, poolInfo.coinTypeB],
+              arguments: [
+                tx.object(clmmConfig.global_config_id),
+                tx.object(poolInfo.poolAddress),
+                tx.pure.u32(Number(asUintN(BigInt(tickLower)))),
+                tx.pure.u32(Number(asUintN(BigInt(tickUpper)))),
+                tx.object(coinObjectIdA),
+                tx.object(coinObjectIdB),
+                tx.pure.u64(maxAmountA),
+                tx.pure.u64(maxAmountB),
+                tx.pure.u128(deltaLiquidity),
+                tx.object(CLOCK_ADDRESS),
+              ],
+            });
+          } else {
+            // Add liquidity to existing position
+            tx.moveCall({
+              target: `${integratePackage}::pool_script_v2::add_liquidity`,
+              typeArguments: [poolInfo.coinTypeA, poolInfo.coinTypeB],
+              arguments: [
+                tx.object(clmmConfig.global_config_id),
+                tx.object(poolInfo.poolAddress),
+                tx.object(positionId),
+                tx.object(coinObjectIdA),
+                tx.object(coinObjectIdB),
+                tx.pure.u64(maxAmountA),
+                tx.pure.u64(maxAmountB),
+                tx.pure.u128(deltaLiquidity),
+                tx.object(CLOCK_ADDRESS),
+              ],
+            });
+          }
+          
+          // Set gas budget
+          tx.setGasBudget(this.config.gasBudget);
+          
+          logger.info('Executing raw Move call for add liquidity', {
+            isOpen,
+            target: isOpen ? 'open_position_with_liquidity' : 'add_liquidity',
+            deltaLiquidity,
+          });
           
           const result = await suiClient.signAndExecuteTransaction({
-            transaction: addLiquidityPayload,
+            transaction: tx,
             signer: keypair,
             options: {
               showEffects: true,
               showEvents: true,
+              showObjectChanges: true,
             },
           });
           
