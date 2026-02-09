@@ -714,10 +714,8 @@ export class RebalanceService {
         const isPendingTx = (errorMsg.includes('pending') && errorMsg.includes('seconds old')) || 
                            (errorMsg.includes('pending') && errorMsg.includes('above threshold'));
         
-        // MoveAbort error 0 in repay_add_liquidity: Usually indicates coin fragmentation
-        // This error occurs when the SDK encounters fragmented coins despite merging
-        // Use a flexible pattern to match MoveAbort error code 0 in repay_add_liquidity
-        // Pattern matches: MoveAbort...repay_add_liquidity..., 0) in command
+        // MoveAbort error 0 in repay_add_liquidity indicates coin fragmentation
+        // or stale coin references despite merging attempts.
         const isMoveAbortError0 = /MoveAbort.*repay_add_liquidity.*,\s*0\)/i.test(errorMsg);
         
         if (!isStaleObject && !isPendingTx && !isMoveAbortError0) {
@@ -1177,10 +1175,6 @@ export class RebalanceService {
       const addResult = await this.retryTransaction(
         async () => {
           // Merge coins before add liquidity to prevent MoveAbort error 0 in repay_add_liquidity.
-          // Sui's object model can fragment coin balances into multiple objects, and the
-          // Cetus SDK requires properly merged coins before executing transactions.
-          // Each merge includes a wait (COIN_MERGE_FINALITY_DELAY_MS) to ensure blockchain state is fully updated.
-          // Note: This merging happens on each retry attempt to ensure fresh coin consolidation.
           logger.debug('Merging coin objects before add liquidity transaction attempt');
           await this.mergeCoins(poolInfo.coinTypeA);
           await this.mergeCoins(poolInfo.coinTypeB);
