@@ -1124,7 +1124,7 @@ export class RebalanceService {
       // Determine which token to fix based on available amounts.
       // Use the scarcer (budget-limiting) token as the fixed side so the SDK
       // never requires more than the freed position amounts.
-      const fixAmountA = chooseFixedToken(amountA, amountB);
+      let fixAmountA = chooseFixedToken(amountA, amountB);
 
       // Determine whether we need to open a new position or add to an existing one.
       // When opening a new position we use is_open: true so the SDK combines
@@ -1153,22 +1153,6 @@ export class RebalanceService {
 
       // Use the SDK's fix token method which automatically calculates liquidity.
       // When is_open is true the SDK opens the position and adds liquidity atomically.
-      const addLiquidityParams: AddLiquidityFixTokenParams = {
-        pool_id: poolInfo.poolAddress,
-        pos_id: positionId,
-        tick_lower: tickLower,
-        tick_upper: tickUpper,
-        amount_a: amountA,
-        amount_b: amountB,
-        slippage: this.config.maxSlippage,
-        fix_amount_a: fixAmountA,
-        is_open: isOpen,
-        coinTypeA: poolInfo.coinTypeA,
-        coinTypeB: poolInfo.coinTypeB,
-        collect_fee: false,
-        rewarder_coin_types: [],
-      };
-      
       // Add liquidity with retry logic that includes coin merging on each attempt.
       // This ensures that if coins become fragmented again or the merge didn't fully
       // propagate, we re-merge on each retry attempt.
@@ -1184,6 +1168,62 @@ export class RebalanceService {
           // before the SDK creates the add liquidity transaction payload.
           logger.debug('Waiting for coin merge propagation before creating add liquidity payload...');
           await new Promise(resolve => setTimeout(resolve, COIN_MERGE_PROPAGATION_DELAY_MS));
+          
+          // Re-fetch balances after merge to ensure amounts do not exceed
+          // the now-available coins (gas used for merges can reduce SUI).
+          const latestBalanceA = await suiClient.getBalance({
+            owner: ownerAddress,
+            coinType: poolInfo.coinTypeA,
+          });
+          const latestBalanceB = await suiClient.getBalance({
+            owner: ownerAddress,
+            coinType: poolInfo.coinTypeB,
+          });
+
+          const latestSafeBalanceA = isSuiA && BigInt(latestBalanceA.totalBalance) > SUI_GAS_RESERVE
+            ? BigInt(latestBalanceA.totalBalance) - SUI_GAS_RESERVE
+            : BigInt(latestBalanceA.totalBalance);
+          const latestSafeBalanceB = isSuiB && BigInt(latestBalanceB.totalBalance) > SUI_GAS_RESERVE
+            ? BigInt(latestBalanceB.totalBalance) - SUI_GAS_RESERVE
+            : BigInt(latestBalanceB.totalBalance);
+
+          const cappedAmountA = capToSafeBalance(BigInt(amountA), latestSafeBalanceA).toString();
+          const cappedAmountB = capToSafeBalance(BigInt(amountB), latestSafeBalanceB).toString();
+
+          if (cappedAmountA !== amountA || cappedAmountB !== amountB) {
+            logger.info('Adjusted add-liquidity amounts to available balances after coin merge', {
+              previousAmountA: amountA,
+              previousAmountB: amountB,
+              amountA: cappedAmountA,
+              amountB: cappedAmountB,
+            });
+            amountA = cappedAmountA;
+            amountB = cappedAmountB;
+          }
+
+          if (BigInt(amountA) === 0n && BigInt(amountB) === 0n) {
+            throw new Error(
+              `Insufficient token balance after coin merge for ${poolInfo.coinTypeA} and ${poolInfo.coinTypeB}.` +
+              ` Available A: ${latestBalanceA.totalBalance}, Available B: ${latestBalanceB.totalBalance}.`
+            );
+          }
+
+          fixAmountA = chooseFixedToken(amountA, amountB);
+          const addLiquidityParams: AddLiquidityFixTokenParams = {
+            pool_id: poolInfo.poolAddress,
+            pos_id: positionId,
+            tick_lower: tickLower,
+            tick_upper: tickUpper,
+            amount_a: amountA,
+            amount_b: amountB,
+            slippage: this.config.maxSlippage,
+            fix_amount_a: fixAmountA,
+            is_open: isOpen,
+            coinTypeA: poolInfo.coinTypeA,
+            coinTypeB: poolInfo.coinTypeB,
+            collect_fee: false,
+            rewarder_coin_types: [],
+          };
           
           // Refetch pool state on each retry to get latest version
           const pool = await sdk.Pool.getPool(poolInfo.poolAddress);
