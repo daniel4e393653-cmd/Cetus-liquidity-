@@ -51,6 +51,12 @@ interface AddLiquidityFixTokenParams {
 const BALANCE_FRACTION_DIVISOR = 10n;
 export type AmountSelectionSource = 'removed' | 'liquidity' | 'config';
 
+const capToSafeBalance = (requested: bigint, available: bigint): bigint => {
+  if (requested <= 0n) return 0n;
+  if (requested <= available) return requested;
+  return available > 0n ? available : 0n;
+};
+
 /**
  * Decide which token amounts to add during a rebalance. Prefers the exact
  * amounts freed from the existing position, falling back to liquidity-derived
@@ -89,8 +95,8 @@ export function selectRebalanceAmounts(params: {
   if (removedA > 0n || removedB > 0n) {
     // Out-of-range positions can be single-sided; keep the missing side at 0
     // to avoid unintentionally pulling fresh wallet funds.
-    const amountA = (removedA > 0n ? (removedA <= safeBalanceA ? removedA : safeBalanceA) : 0n).toString();
-    const amountB = (removedB > 0n ? (removedB <= safeBalanceB ? removedB : safeBalanceB) : 0n).toString();
+    const amountA = capToSafeBalance(removedA, safeBalanceA).toString();
+    const amountB = capToSafeBalance(removedB, safeBalanceB).toString();
     logger.info('Using removed position amounts for rebalance', { amountA, amountB });
     return { amountA, amountB, source: 'removed' };
   }
@@ -105,8 +111,8 @@ export function selectRebalanceAmounts(params: {
     );
     const reqA = BigInt(required.coinA.toString());
     const reqB = BigInt(required.coinB.toString());
-    const amountA = (reqA <= safeBalanceA ? reqA : safeBalanceA > 0n ? safeBalanceA : 0n).toString();
-    const amountB = (reqB <= safeBalanceB ? reqB : safeBalanceB > 0n ? safeBalanceB : 0n).toString();
+    const amountA = capToSafeBalance(reqA, safeBalanceA).toString();
+    const amountB = capToSafeBalance(reqB, safeBalanceB).toString();
     logger.info('Using amounts derived from original liquidity', {
       originalLiquidity,
       requiredA: reqA.toString(),
