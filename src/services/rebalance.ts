@@ -54,8 +54,11 @@ const BALANCE_FRACTION_DIVISOR = 10n;
 export type AmountSelectionSource = 'removed' | 'liquidity' | 'config';
 
 /**
- * Cap a requested token amount to what is safely available. Returns 0 when the
- * requested amount is zero or negative.
+ * Cap a requested token amount to what is safely available.
+ * @param requested The desired token amount (may be zero or negative).
+ * @param available The safe amount available to spend.
+ * @returns The requested amount capped to the available balance, or 0 when the
+ *          request is non-positive.
  */
 const capToSafeBalance = (requested: bigint, available: bigint): bigint => {
   if (requested <= 0n) return 0n;
@@ -98,9 +101,10 @@ export function selectRebalanceAmounts(params: {
   const removedA = removedAmountA ? BigInt(removedAmountA) : 0n;
   const removedB = removedAmountB ? BigInt(removedAmountB) : 0n;
 
+  // Proceed when at least one side freed a positive amount. Out-of-range
+  // positions can be single-sided; keep the missing side at 0 to avoid pulling
+  // new wallet funds (a later swap will balance if needed).
   if (removedA > 0n || removedB > 0n) {
-    // Out-of-range positions can be single-sided; keep the missing side at 0
-    // to avoid unintentionally pulling fresh wallet funds.
     const amountA = capToSafeBalance(removedA, safeBalanceA).toString();
     const amountB = capToSafeBalance(removedB, safeBalanceB).toString();
     logger.info('Using removed position amounts for rebalance', { amountA, amountB });
