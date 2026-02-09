@@ -100,11 +100,8 @@ export class CetusRebalanceBot {
         throw new Error('Invalid pool configuration. Please check POOL_ADDRESS in .env file.');
       }
 
-      // Validate the configured position exists (validated again in service constructor for safety)
-      if (!config.positionId) {
-        throw new Error('POSITION_ID is required for simple rebalance bot. Please configure it in .env file.');
-      }
-
+      // Validate the configured position exists
+      // Note: POSITION_ID is validated at config load time, here we check if it exists on-chain
       try {
         const positions = await this.monitorService.getPositions(address);
         const position = positions.find(p => p.positionId === config.positionId);
@@ -125,11 +122,7 @@ export class CetusRebalanceBot {
         throw error;
       }
 
-      // Validate token amounts are configured (validated again in service constructor for safety)
-      if (!config.tokenAAmount || !config.tokenBAmount) {
-        throw new Error('TOKEN_A_AMOUNT and TOKEN_B_AMOUNT must be configured. Please set them in .env file.');
-      }
-
+      // Note: Token amounts are validated at config load time
       logger.info('Setup validation completed successfully', {
         tokenAAmount: config.tokenAAmount,
         tokenBAmount: config.tokenBAmount,
