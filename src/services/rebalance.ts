@@ -48,9 +48,15 @@ interface AddLiquidityFixTokenParams {
   rewarder_coin_types: string[];
 }
 
+// When no explicit amount is configured, default to deploying ~10% of the
+// available safe balance to avoid draining the wallet in a single add.
 const BALANCE_FRACTION_DIVISOR = 10n;
 export type AmountSelectionSource = 'removed' | 'liquidity' | 'config';
 
+/**
+ * Cap a requested token amount to what is safely available. Returns 0 when the
+ * requested amount is zero or negative.
+ */
 const capToSafeBalance = (requested: bigint, available: bigint): bigint => {
   if (requested <= 0n) return 0n;
   if (requested <= available) return requested;
