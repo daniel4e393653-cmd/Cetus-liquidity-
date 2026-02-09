@@ -30,6 +30,24 @@ This is a **simplified version** that focuses on core functionality:
 
 ## Installation
 
+### Quick Setup
+
+Run the automated setup script:
+```bash
+git clone https://github.com/daniel4e393653-cmd/Cetus-liquidity-.git
+cd Cetus-liquidity-
+npm run setup
+```
+
+This will:
+- Install all dependencies
+- Create a `.env` file from `.env.example`
+- Display next steps
+
+Then edit the `.env` file with your configuration (see Configuration section below).
+
+### Manual Setup
+
 1. Clone the repository:
 ```bash
 git clone https://github.com/daniel4e393653-cmd/Cetus-liquidity-.git
