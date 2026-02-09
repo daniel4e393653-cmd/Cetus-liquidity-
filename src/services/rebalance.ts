@@ -58,12 +58,14 @@ const BALANCE_FRACTION_DIVISOR = 10n;
 // The blockchain needs this time to update state and make the new merged coin
 // object available for subsequent transactions. Without this delay, the SDK
 // may attempt to use stale coin object references, leading to MoveAbort errors.
-const COIN_MERGE_FINALITY_DELAY_MS = 2000;
+// Increased from 2000ms to 5000ms to allow for slower network propagation.
+const COIN_MERGE_FINALITY_DELAY_MS = 5000;
 
 // Additional delay in milliseconds after all coins are merged before creating
 // the add liquidity payload. This ensures full state propagation across the
 // network before the SDK queries coin objects for the transaction.
-const COIN_MERGE_PROPAGATION_DELAY_MS = 1000;
+// Increased from 1000ms to 2000ms to allow for better state propagation.
+const COIN_MERGE_PROPAGATION_DELAY_MS = 2000;
 
 export type AmountSelectionSource = 'removed' | 'liquidity' | 'config';
 
@@ -641,14 +643,32 @@ export class RebalanceService {
       await new Promise(resolve => setTimeout(resolve, COIN_MERGE_FINALITY_DELAY_MS));
 
       // Verify the merge was successful by checking that coins are now consolidated.
-      // If coins aren't properly merged, fail early rather than attempting add liquidity.
+      // If coins aren't properly merged, wait additional time for propagation.
       const verifyCoins = await suiClient.getCoins({
         owner: ownerAddress,
         coinType,
       });
 
       if (verifyCoins.data && verifyCoins.data.length > 1) {
-        logger.warn(`Coin merge may not have fully propagated for ${coinType}. Expected 1 coin object, found ${verifyCoins.data.length}. Proceeding anyway.`);
+        logger.warn(`Coin merge may not have fully propagated for ${coinType}. Expected 1 coin object, found ${verifyCoins.data.length}. Waiting additional time...`);
+        
+        // Wait additional time for propagation
+        await new Promise(resolve => setTimeout(resolve, COIN_MERGE_FINALITY_DELAY_MS));
+        
+        // Verify again
+        const secondVerify = await suiClient.getCoins({
+          owner: ownerAddress,
+          coinType,
+        });
+        
+        if (secondVerify.data && secondVerify.data.length > 1) {
+          throw new Error(
+            `Coin merge failed to consolidate ${coinType}. Expected 1 coin object but found ${secondVerify.data.length} after waiting ${COIN_MERGE_FINALITY_DELAY_MS * 2}ms total. ` +
+            `This indicates network propagation issues or concurrent transactions.`
+          );
+        }
+        
+        logger.info(`After additional wait, ${coinType} now has ${secondVerify.data?.length || 0} coin object(s)`);
       } else {
         logger.debug(`After merge verification: ${coinType} now has ${verifyCoins.data?.length || 0} coin object(s)`);
       }
@@ -694,10 +714,19 @@ export class RebalanceService {
         const isPendingTx = (errorMsg.includes('pending') && errorMsg.includes('seconds old')) || 
                            (errorMsg.includes('pending') && errorMsg.includes('above threshold'));
         
-        if (!isStaleObject && !isPendingTx) {
+        // MoveAbort error 0 in repay_add_liquidity indicates coin fragmentation
+        // or stale coin references despite merging attempts.
+        // Pattern matches error format: MoveAbort...repay_add_liquidity..., 0)
+        const isMoveAbortError0 = /MoveAbort.*repay_add_liquidity.*,\s*0\s*\)/i.test(errorMsg);
+        
+        if (!isStaleObject && !isPendingTx && !isMoveAbortError0) {
           // Non-retryable error, throw immediately
           logger.error(`Non-retryable error in ${operationName}: ${errorMsg}`);
           throw error;
+        }
+        
+        if (isMoveAbortError0) {
+          logger.warn(`MoveAbort error 0 detected in ${operationName} - this may indicate coin fragmentation or stale coin references`);
         }
         
         if (attempt < maxRetries - 1) {
@@ -1140,23 +1169,22 @@ export class RebalanceService {
         rewarder_coin_types: [],
       };
       
-      // Merge coins before add liquidity to prevent MoveAbort error 0 in repay_add_liquidity.
-      // Sui's object model can fragment coin balances into multiple objects, and the
-      // Cetus SDK requires properly merged coins before executing transactions.
-      // Each merge includes a wait (COIN_MERGE_FINALITY_DELAY_MS) to ensure blockchain state is fully updated.
-      logger.info('Merging coin objects before add liquidity transaction');
-      await this.mergeCoins(poolInfo.coinTypeA);
-      await this.mergeCoins(poolInfo.coinTypeB);
-
-      // Additional safety delay to ensure all coin merges are fully propagated
-      // before the SDK creates the add liquidity transaction payload.
-      logger.debug('Waiting for coin merge propagation before creating add liquidity payload...');
-      await new Promise(resolve => setTimeout(resolve, COIN_MERGE_PROPAGATION_DELAY_MS));
-
-      // Add liquidity with retry logic
+      // Add liquidity with retry logic that includes coin merging on each attempt.
+      // This ensures that if coins become fragmented again or the merge didn't fully
+      // propagate, we re-merge on each retry attempt.
       logger.info('Executing add liquidity transaction...');
       const addResult = await this.retryTransaction(
         async () => {
+          // Merge coins before add liquidity to prevent MoveAbort error 0 in repay_add_liquidity.
+          logger.debug('Merging coin objects before add liquidity transaction attempt');
+          await this.mergeCoins(poolInfo.coinTypeA);
+          await this.mergeCoins(poolInfo.coinTypeB);
+
+          // Additional safety delay to ensure all coin merges are fully propagated
+          // before the SDK creates the add liquidity transaction payload.
+          logger.debug('Waiting for coin merge propagation before creating add liquidity payload...');
+          await new Promise(resolve => setTimeout(resolve, COIN_MERGE_PROPAGATION_DELAY_MS));
+          
           // Refetch pool state on each retry to get latest version
           const pool = await sdk.Pool.getPool(poolInfo.poolAddress);
           const currentSqrtPrice = new BN(pool.current_sqrt_price);
