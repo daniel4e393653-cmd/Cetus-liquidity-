@@ -166,6 +166,22 @@ export function selectRebalanceAmounts(params: {
   return { amountA, amountB, source: 'config' };
 }
 
+/**
+ * Choose which token amount to fix for add-liquidity based on the available
+ * budgets. We fix the scarcer token so the SDK never computes a counterparty
+ * amount larger than what was freed from the existing position.
+ */
+export function chooseFixedToken(amountA: string, amountB: string): boolean {
+  const amountABigInt = BigInt(amountA);
+  const amountBBigInt = BigInt(amountB);
+
+  if (amountABigInt === 0n && amountBBigInt > 0n) return false; // fix B
+  if (amountBBigInt === 0n && amountABigInt > 0n) return true;  // fix A
+
+  // Fix the scarcer token (smaller amount) to stay within the existing budget
+  return amountABigInt <= amountBBigInt;
+}
+
 export class RebalanceService {
   private sdkService: CetusSDKService;
   private monitorService: PositionMonitorService;
@@ -956,9 +972,9 @@ export class RebalanceService {
       }
 
       // Determine which token to fix based on available amounts.
-      // When one amount is 0 (common for out-of-range positions), this ensures
-      // we fix the non-zero token so the SDK can compute the required counterpart.
-      const fixAmountA = BigInt(amountA) >= BigInt(amountB);
+      // Use the scarcer (budget-limiting) token as the fixed side so the SDK
+      // never requires more than the freed position amounts.
+      const fixAmountA = chooseFixedToken(amountA, amountB);
 
       // Determine whether we need to open a new position or add to an existing one.
       // When opening a new position we use is_open: true so the SDK combines
