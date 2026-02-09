@@ -1,4 +1,23 @@
 import * as dotenv from 'dotenv';
+import * as fs from 'fs';
+import * as path from 'path';
+
+// Check if .env file exists, if not, create it from .env.example
+const envPath = path.join(process.cwd(), '.env');
+const envExamplePath = path.join(process.cwd(), '.env.example');
+
+if (!fs.existsSync(envPath)) {
+  if (fs.existsSync(envExamplePath)) {
+    console.log('\n⚠️  No .env file found. Creating one from .env.example...');
+    fs.copyFileSync(envExamplePath, envPath);
+    console.log('✅ .env file created. Please edit it with your configuration.');
+    console.log('📝 Required settings: PRIVATE_KEY, POOL_ADDRESS, POSITION_ID, TOKEN_A_AMOUNT, TOKEN_B_AMOUNT\n');
+  } else {
+    console.error('\n❌ Error: Neither .env nor .env.example file found!');
+    console.error('Please make sure you are running this from the project root directory.\n');
+    process.exit(1);
+  }
+}
 
 dotenv.config();
 
