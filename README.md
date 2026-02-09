@@ -1,16 +1,25 @@
-# Cetus Liquidity Rebalance Bot
+# Cetus Liquidity Simple Rebalance Bot
 
-An automatic liquidity rebalancing bot for Cetus Protocol on the Sui Network. This bot monitors your liquidity positions and automatically rebalances them when the market price moves outside your specified range, maximizing fee collection and capital efficiency.
+A simple automatic liquidity rebalancing bot for Cetus Protocol on the Sui Network. This bot monitors a single liquidity position and automatically rebalances it when the market price moves outside the optimal range.
 
 ## Features
 
-- ✅ **Automatic Position Monitoring**: Continuously monitors your liquidity positions
-- ✅ **Smart Rebalancing**: Automatically rebalances when price moves outside optimal range
-- ✅ **Configurable Thresholds**: Set custom rebalance thresholds based on your strategy
-- ✅ **Risk Management**: Built-in slippage protection and gas budget controls
-- ✅ **Comprehensive Logging**: Detailed logging with configurable verbosity
+- ✅ **Simple Single Position Monitoring**: Tracks one configured liquidity position
+- ✅ **Automatic Rebalancing**: Rebalances when price moves outside optimal range
+- ✅ **Configurable Amounts**: Use fixed token amounts for each rebalance
+- ✅ **Basic Risk Management**: Slippage protection and gas budget controls
+- ✅ **Clean Logging**: Clear logging with configurable verbosity
 - ✅ **TypeScript**: Full TypeScript support with type safety
-- ✅ **Production Ready**: Error handling, retries, and graceful shutdown
+
+## What's Different in Simple Mode
+
+This is a **simplified version** that focuses on core functionality:
+- **Requires POSITION_ID**: You must specify which position to track
+- **Requires TOKEN_A_AMOUNT and TOKEN_B_AMOUNT**: Fixed amounts for rebalancing
+- **No coin merging**: Assumes coins are already merged
+- **No token swapping**: Requires balanced token amounts
+- **No multi-position tracking**: Manages exactly one position
+- **Simple retry logic**: Basic 2-attempt retry instead of complex backoff
 
 ## Prerequisites
 
@@ -51,6 +60,13 @@ PRIVATE_KEY=your_private_key_here
 
 # The pool address you want to manage
 POOL_ADDRESS=0x...
+
+# The specific position ID to track and rebalance (REQUIRED)
+POSITION_ID=0x...
+
+# Token amounts for rebalancing (REQUIRED)
+TOKEN_A_AMOUNT=1000000
+TOKEN_B_AMOUNT=1000000
 ```
 
 ### Optional Settings
@@ -72,10 +88,6 @@ REBALANCE_THRESHOLD=0.05
 LOWER_TICK=
 UPPER_TICK=
 RANGE_WIDTH=
-
-# Token amounts for new positions
-TOKEN_A_AMOUNT=
-TOKEN_B_AMOUNT=
 
 # Maximum slippage tolerance (1% = 0.01)
 MAX_SLIPPAGE=0.01
@@ -111,9 +123,10 @@ npm start
 The bot will:
 1. Initialize and connect to the Sui network
 2. Load your wallet and verify access
-3. Start monitoring your positions
-4. Automatically rebalance when needed
-5. Log all activities
+3. Validate the configured position exists
+4. Start monitoring your position
+5. Automatically rebalance when needed using configured token amounts
+6. Log all activities
 
 ### Stop the Bot
 
@@ -121,11 +134,14 @@ Press `Ctrl+C` to gracefully stop the bot.
 
 ## How It Works
 
-1. **Monitoring**: The bot periodically checks your liquidity positions against the current pool price
-2. **Range Analysis**: It calculates how close the current price is to your position boundaries
-3. **Rebalance Decision**: If the price is too close to boundaries (within threshold) or out of range, it triggers a rebalance
-4. **Execution**: The bot removes liquidity from the old position and creates a new position centered around the current price
-5. **Logging**: All actions are logged for transparency and debugging
+1. **Monitoring**: The bot periodically checks your configured liquidity position against the current pool price
+2. **Range Analysis**: It calculates if the current price is outside your position range
+3. **Rebalance Decision**: If the price is out of range or too close to boundaries, it triggers a rebalance
+4. **Execution**: The bot:
+   - Removes all liquidity from the old position
+   - Creates a new position centered around the current price
+   - Uses the configured TOKEN_A_AMOUNT and TOKEN_B_AMOUNT
+5. **Logging**: All actions are logged for transparency
 
 ## Security Considerations
 
@@ -133,40 +149,43 @@ Press `Ctrl+C` to gracefully stop the bot.
 
 - **Never commit your `.env` file** - it contains your private key
 - **Use a dedicated wallet** - Don't use your main wallet for the bot
-- **Start with small amounts** - Test with small liquidity amounts first
+- **Start with small amounts** - Test with small TOKEN_A_AMOUNT and TOKEN_B_AMOUNT first
 - **Monitor regularly** - Check bot logs and position performance
 - **Keep private key secure** - Store it encrypted when possible
 - **Use testnet first** - Always test on testnet before mainnet
+- **Pre-merge coins** - Simple bot doesn't merge coins automatically
+- **Have balanced tokens** - Ensure you have both tokens available
 
 ## Project Structure
 
 ```
 .
 ├── src/
-│   ├── config/           # Configuration management
+│   ├── config/                # Configuration management
 │   │   └── index.ts
-│   ├── services/         # Core services
-│   │   ├── sdk.ts       # Cetus SDK initialization
-│   │   ├── monitor.ts   # Position monitoring
-│   │   └── rebalance.ts # Rebalance logic
-│   ├── utils/           # Utilities
-│   │   └── logger.ts    # Logging utility
-│   ├── bot.ts           # Main bot class
-│   └── index.ts         # Entry point
-├── .env.example         # Environment template
-├── .gitignore          # Git ignore rules
-├── package.json        # Dependencies
-├── tsconfig.json       # TypeScript config
-└── README.md           # This file
+│   ├── services/              # Core services
+│   │   ├── sdk.ts            # Cetus SDK initialization
+│   │   ├── monitor.ts        # Position monitoring
+│   │   └── rebalance-simple.ts # Simple rebalance logic
+│   ├── utils/                # Utilities
+│   │   └── logger.ts         # Logging utility
+│   ├── bot.ts                # Main bot class
+│   └── index.ts              # Entry point
+├── .env.example              # Environment template
+├── .gitignore               # Git ignore rules
+├── package.json             # Dependencies
+├── tsconfig.json            # TypeScript config
+└── README.md                # This file
 ```
 
 ## Troubleshooting
 
 ### Bot won't start
 
-- Check that all required environment variables are set
+- Check that all required environment variables are set (PRIVATE_KEY, POOL_ADDRESS, POSITION_ID, TOKEN_A_AMOUNT, TOKEN_B_AMOUNT)
 - Verify your private key format (64-character hex string)
 - Ensure your wallet has sufficient SUI for gas fees
+- Verify the POSITION_ID exists and belongs to your wallet
 
 ### "Invalid private key format" error
 
@@ -179,7 +198,8 @@ Press `Ctrl+C` to gracefully stop the bot.
 - Check that `REBALANCE_THRESHOLD` is appropriate (0.05 = 5%)
 - Verify the pool has enough liquidity
 - Check logs for any errors during rebalance attempts
-- Ensure your wallet has enough tokens for the new position
+- Ensure you have enough TOKEN_A and TOKEN_B in your wallet (at least TOKEN_A_AMOUNT and TOKEN_B_AMOUNT)
+- Make sure coins are already merged (simple bot doesn't merge automatically)
 
 ### High gas costs
 
@@ -203,11 +223,11 @@ npm run clean
 
 ### Code Structure
 
-The bot follows a service-oriented architecture:
+The bot follows a simple service-oriented architecture:
 
 - **CetusSDKService**: Manages SDK initialization and wallet operations
 - **PositionMonitorService**: Monitors positions and pool state
-- **RebalanceService**: Handles rebalancing logic and execution
+- **SimpleRebalanceService**: Handles simple rebalancing logic with fixed amounts
 - **CetusRebalanceBot**: Orchestrates all services and manages the bot lifecycle
 
 ## Advanced Configuration
@@ -217,13 +237,13 @@ The bot follows a service-oriented architecture:
 By default, the bot calculates optimal ranges based on:
 - Current tick index
 - Pool tick spacing
-- Configured range width
 
-You can override this by setting `LOWER_TICK` and `UPPER_TICK` manually.
+The new position is created around the current price with appropriate tick spacing.
 
 ### Multiple Pools
 
-To manage multiple pools, run multiple instances of the bot with different `.env` files:
+To manage multiple pools, run multiple instances of the bot with different `.env` files.
+Each bot instance manages one position in one pool.
 
 ```bash
 # Terminal 1
