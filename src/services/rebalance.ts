@@ -551,6 +551,77 @@ export class RebalanceService {
   }
 
   /**
+   * Merges all coin objects of a given coin type into a single primary coin.
+   * This is necessary because Sui's object model can fragment coin balances,
+   * and the Cetus SDK requires properly merged coins before executing transactions.
+   * Without this, transactions fail with MoveAbort error 0 in repay_add_liquidity.
+   */
+  private async mergeCoins(coinType: string): Promise<void> {
+    try {
+      const suiClient = this.sdkService.getSuiClient();
+      const keypair = this.sdkService.getKeypair();
+      const ownerAddress = this.sdkService.getAddress();
+
+      // Get all coin objects for this coin type
+      const allCoins = await suiClient.getCoins({
+        owner: ownerAddress,
+        coinType,
+      });
+
+      if (!allCoins.data || allCoins.data.length <= 1) {
+        // No merging needed if there's 0 or 1 coin object
+        logger.debug(`No coin merging needed for ${coinType} (${allCoins.data?.length || 0} coin objects)`);
+        return;
+      }
+
+      // Sort coins by balance (largest first) to use the largest as primary
+      const sortedCoins = allCoins.data.sort((a, b) => 
+        Number(BigInt(b.balance) - BigInt(a.balance))
+      );
+
+      const primaryCoin = sortedCoins[0];
+      const coinsToMerge = sortedCoins.slice(1).map(coin => coin.coinObjectId);
+
+      logger.info(`Merging ${coinsToMerge.length} coin objects into primary coin for ${coinType}`, {
+        primaryCoinId: primaryCoin.coinObjectId,
+        primaryBalance: primaryCoin.balance,
+        coinsToMerge: coinsToMerge.length,
+      });
+
+      // Import Transaction from @mysten/sui
+      const { Transaction } = await import('@mysten/sui/transactions');
+      
+      // Create a transaction to merge all coins into the primary coin
+      const tx = new Transaction();
+      tx.mergeCoins(primaryCoin.coinObjectId, coinsToMerge);
+      
+      // Set gas budget
+      tx.setGasBudget(this.config.gasBudget);
+
+      // Execute the merge transaction
+      const result = await suiClient.signAndExecuteTransaction({
+        transaction: tx,
+        signer: keypair,
+        options: {
+          showEffects: true,
+        },
+      });
+
+      if (result.effects?.status?.status !== 'success') {
+        throw new Error(`Failed to merge coins: ${result.effects?.status?.error || 'Unknown error'}`);
+      }
+
+      logger.info(`Successfully merged coins for ${coinType}`, {
+        digest: result.digest,
+      });
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      logger.error(`Failed to merge coins for ${coinType}: ${errorMsg}`);
+      throw error;
+    }
+  }
+
+  /**
    * Helper function to retry a transaction with exponential backoff.
    * Handles stale object references and pending transactions.
    */
@@ -1030,6 +1101,13 @@ export class RebalanceService {
         collect_fee: false,
         rewarder_coin_types: [],
       };
+      
+      // Merge coins before add liquidity to prevent MoveAbort error 0 in repay_add_liquidity.
+      // Sui's object model can fragment coin balances into multiple objects, and the
+      // Cetus SDK requires properly merged coins before executing transactions.
+      logger.info('Merging coin objects before add liquidity transaction');
+      await this.mergeCoins(poolInfo.coinTypeA);
+      await this.mergeCoins(poolInfo.coinTypeB);
       
       // Add liquidity with retry logic
       logger.info('Executing add liquidity transaction...');
