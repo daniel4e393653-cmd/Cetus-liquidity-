@@ -48,6 +48,7 @@ interface AddLiquidityFixTokenParams {
   rewarder_coin_types: string[];
 }
 
+const BALANCE_FRACTION_DIVISOR = 10n;
 export type AmountSelectionSource = 'removed' | 'liquidity' | 'config';
 
 /**
@@ -85,6 +86,8 @@ export function selectRebalanceAmounts(params: {
   if (removedAmountA || removedAmountB) {
     const removedA = removedAmountA ? BigInt(removedAmountA) : 0n;
     const removedB = removedAmountB ? BigInt(removedAmountB) : 0n;
+    // Out-of-range positions can be single-sided; keep the missing side at 0
+    // to avoid unintentionally pulling fresh wallet funds.
     const amountA = (removedA > 0n ? (removedA <= safeBalanceA ? removedA : safeBalanceA) : 0n).toString();
     const amountB = (removedB > 0n ? (removedB <= safeBalanceB ? removedB : safeBalanceB) : 0n).toString();
     logger.info('Using removed position amounts for rebalance', { amountA, amountB });
@@ -113,8 +116,12 @@ export function selectRebalanceAmounts(params: {
     return { amountA, amountB, source: 'liquidity' };
   }
 
-  const amountA = tokenAAmount || String(safeBalanceA > 0n ? safeBalanceA / 10n : defaultMinAmount);
-  const amountB = tokenBAmount || String(safeBalanceB > 0n ? safeBalanceB / 10n : defaultMinAmount);
+  const amountA = tokenAAmount || String(
+    safeBalanceA > 0n ? safeBalanceA / BALANCE_FRACTION_DIVISOR : defaultMinAmount,
+  );
+  const amountB = tokenBAmount || String(
+    safeBalanceB > 0n ? safeBalanceB / BALANCE_FRACTION_DIVISOR : defaultMinAmount,
+  );
   return { amountA, amountB, source: 'config' };
 }
 
