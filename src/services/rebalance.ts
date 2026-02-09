@@ -83,9 +83,10 @@ export function selectRebalanceAmounts(params: {
     tokenBAmount,
   } = params;
 
-  if (removedAmountA || removedAmountB) {
-    const removedA = removedAmountA ? BigInt(removedAmountA) : 0n;
-    const removedB = removedAmountB ? BigInt(removedAmountB) : 0n;
+  const removedA = removedAmountA ? BigInt(removedAmountA) : 0n;
+  const removedB = removedAmountB ? BigInt(removedAmountB) : 0n;
+
+  if (removedA > 0n || removedB > 0n) {
     // Out-of-range positions can be single-sided; keep the missing side at 0
     // to avoid unintentionally pulling fresh wallet funds.
     const amountA = (removedA > 0n ? (removedA <= safeBalanceA ? removedA : safeBalanceA) : 0n).toString();
