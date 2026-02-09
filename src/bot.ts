@@ -1,6 +1,6 @@
 import { CetusSDKService } from './services/sdk';
 import { PositionMonitorService } from './services/monitor';
-import { RebalanceService } from './services/rebalance';
+import { SimpleRebalanceService } from './services/rebalance-simple';
 import { config } from './config';
 import { logger } from './utils/logger';
 import { retryWithBackoff } from './utils/retry';
@@ -8,27 +8,27 @@ import { retryWithBackoff } from './utils/retry';
 export class CetusRebalanceBot {
   private sdkService: CetusSDKService;
   private monitorService: PositionMonitorService;
-  private rebalanceService: RebalanceService;
+  private rebalanceService: SimpleRebalanceService;
   private isRunning: boolean = false;
   private intervalId?: NodeJS.Timeout;
 
   constructor() {
-    logger.info('Initializing Cetus Rebalance Bot...');
+    logger.info('Initializing Simple Cetus Rebalance Bot...');
     
     // Initialize services
     this.sdkService = new CetusSDKService(config);
     this.monitorService = new PositionMonitorService(this.sdkService, config);
-    this.rebalanceService = new RebalanceService(
+    this.rebalanceService = new SimpleRebalanceService(
       this.sdkService,
       this.monitorService,
       config
     );
 
-    logger.info('Bot initialized successfully', {
+    logger.info('Simple Bot initialized successfully', {
       network: config.network,
       address: this.sdkService.getAddress(),
       poolAddress: config.poolAddress,
-      positionId: config.positionId || '(all positions)',
+      positionId: config.positionId,
       checkInterval: config.checkInterval,
     });
   }
@@ -39,13 +39,13 @@ export class CetusRebalanceBot {
       return;
     }
 
-    logger.info('Initializing Cetus Rebalance Bot...');
+    logger.info('Initializing Simple Cetus Rebalance Bot...');
 
     // Validate environment setup before starting
     await this.validateSetup();
 
     this.isRunning = true;
-    logger.info('Bot started successfully');
+    logger.info('Simple Bot started successfully');
 
     // Perform initial check
     await this.performCheck();
@@ -60,7 +60,7 @@ export class CetusRebalanceBot {
 
   private async validateSetup(): Promise<void> {
     try {
-      logger.info('Validating bot setup...');
+      logger.info('Validating simple bot setup...');
 
       // Check wallet balance
       const address = this.sdkService.getAddress();
@@ -102,46 +102,40 @@ export class CetusRebalanceBot {
         throw new Error('Invalid pool configuration. Please check POOL_ADDRESS in .env file.');
       }
 
-      // Check for existing positions
-      try {
-        const positions = await this.monitorService.getPositions(address);
-        const poolPositions = positions.filter(p => p.poolAddress === config.poolAddress);
-        
-        if (poolPositions.length > 0) {
-          logger.info(`Found ${poolPositions.length} existing position(s) in this pool`);
-          poolPositions.forEach((pos, idx) => {
-            logger.info(`Position ${idx + 1}:`, {
-              id: pos.positionId,
-              tickRange: `[${pos.tickLower}, ${pos.tickUpper}]`,
-              inRange: pos.inRange,
-            });
-          });
-        } else {
-          logger.info('No existing positions found in this pool');
-          logger.info('The bot will wait until a position is created to begin rebalancing');
-        }
-
-        // When a POSITION_ID is configured, verify it exists in the pool
-        if (config.positionId) {
-          const tracked = poolPositions.find(p => p.positionId === config.positionId);
-          if (tracked) {
-            logger.info(`Tracking position: ${config.positionId}`, {
-              tickRange: `[${tracked.tickLower}, ${tracked.tickUpper}]`,
-              liquidity: tracked.liquidity,
-              inRange: tracked.inRange,
-            });
-          } else {
-            logger.warn(
-              `Configured POSITION_ID ${config.positionId} not found in pool. ` +
-              `The bot will wait until the position appears.`
-            );
-          }
-        }
-      } catch (error) {
-        logger.warn('Could not fetch existing positions', error);
+      // Validate the configured position exists
+      if (!config.positionId) {
+        throw new Error('POSITION_ID is required for simple rebalance bot. Please configure it in .env file.');
       }
 
-      logger.info('Setup validation completed successfully');
+      try {
+        const positions = await this.monitorService.getPositions(address);
+        const position = positions.find(p => p.positionId === config.positionId);
+        
+        if (position) {
+          logger.info(`Tracking position: ${config.positionId}`, {
+            poolAddress: position.poolAddress,
+            tickRange: `[${position.tickLower}, ${position.tickUpper}]`,
+            liquidity: position.liquidity,
+            inRange: position.inRange,
+          });
+        } else {
+          logger.error(`Configured POSITION_ID ${config.positionId} not found.`);
+          throw new Error(`Position ${config.positionId} not found. Please check POSITION_ID in .env file.`);
+        }
+      } catch (error) {
+        logger.error('Could not validate position', error);
+        throw error;
+      }
+
+      // Validate token amounts are configured
+      if (!config.tokenAAmount || !config.tokenBAmount) {
+        throw new Error('TOKEN_A_AMOUNT and TOKEN_B_AMOUNT must be configured. Please set them in .env file.');
+      }
+
+      logger.info('Setup validation completed successfully', {
+        tokenAAmount: config.tokenAAmount,
+        tokenBAmount: config.tokenBAmount,
+      });
     } catch (error) {
       logger.error('Setup validation failed', error);
       throw error;
