@@ -3,7 +3,8 @@ import { PositionMonitorService, PoolInfo, PositionInfo } from './monitor';
 import { BotConfig } from '../config';
 import { logger } from '../utils/logger';
 import BN from 'bn.js';
-import { TickMath, ClmmPoolUtil } from '@cetusprotocol/cetus-sui-clmm-sdk';
+import { TickMath, ClmmPoolUtil, asUintN } from '@cetusprotocol/cetus-sui-clmm-sdk';
+import { Transaction } from '@mysten/sui/transactions';
 
 type BalanceResult = Awaited<ReturnType<ReturnType<CetusSDKService['getSuiClient']>['getBalance']>>;
 
@@ -583,7 +584,7 @@ export class RebalanceService {
       return undefined;
     }
 
-    // Return the coin with the largest balance
+    // Return the coin with the largest balance (descending order)
     const sortedCoins = allCoins.data.sort((a, b) => {
       const balanceA = BigInt(a.balance);
       const balanceB = BigInt(b.balance);
@@ -633,8 +634,6 @@ export class RebalanceService {
         coinsToMerge: coinsToMerge.length,
       });
 
-      // Import Transaction from @mysten/sui
-      const { Transaction } = await import('@mysten/sui/transactions');
       
       // Create a transaction to merge all coins into the primary coin
       const tx = new Transaction();
@@ -1269,7 +1268,7 @@ export class RebalanceService {
             currentSqrtPrice
           );
           
-          const deltaLiquidity = liquidityResult.liquidity.toString();
+          const deltaLiquidity = liquidityResult.liquidityAmount.toString();
           const maxAmountA = liquidityResult.tokenMaxA.toString();
           const maxAmountB = liquidityResult.tokenMaxB.toString();
           
@@ -1280,14 +1279,17 @@ export class RebalanceService {
             fixAmountA,
           });
           
-          // Import Transaction and build raw Move call
-          const { Transaction } = await import('@mysten/sui/transactions');
+          // Build raw Move call transaction
           const tx = new Transaction();
           
           // Get SDK configuration for contract addresses
           const sdkOptions = sdk.sdkOptions;
-          const clmmConfig = sdkOptions.clmm_pool.config;
+          const clmmConfig = sdkOptions.clmm_pool?.config;
           const integratePackage = sdkOptions.integrate.published_at;
+          
+          if (!clmmConfig) {
+            throw new Error('CLMM pool configuration is not available in SDK options');
+          }
           
           // CLOCK_ADDRESS is a standard Sui address for the clock object
           const CLOCK_ADDRESS = '0x6';
@@ -1300,8 +1302,8 @@ export class RebalanceService {
               arguments: [
                 tx.object(clmmConfig.global_config_id),
                 tx.object(poolInfo.poolAddress),
-                tx.pure.u32(tickLower),
-                tx.pure.u32(tickUpper),
+                tx.pure.u32(Number(asUintN(BigInt(tickLower)))),
+                tx.pure.u32(Number(asUintN(BigInt(tickUpper)))),
                 tx.object(coinObjectIdA),
                 tx.object(coinObjectIdB),
                 tx.pure.u64(maxAmountA),
