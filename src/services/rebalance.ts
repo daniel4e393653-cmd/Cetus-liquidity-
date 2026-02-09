@@ -5,6 +5,8 @@ import { logger } from '../utils/logger';
 import BN from 'bn.js';
 import { TickMath, ClmmPoolUtil } from '@cetusprotocol/cetus-sui-clmm-sdk';
 
+type BalanceResult = Awaited<ReturnType<ReturnType<CetusSDKService['getSuiClient']>['getBalance']>>;
+
 export interface RebalanceResult {
   success: boolean;
   transactionDigest?: string;
@@ -64,6 +66,26 @@ const capToSafeBalance = (requested: bigint, available: bigint): bigint => {
   if (requested <= 0n) return 0n;
   if (requested <= available) return requested;
   return available > 0n ? available : 0n;
+};
+
+const getAdjustedAmount = (
+  currentAmount: bigint,
+  safeBalance: bigint,
+  minAmount: bigint,
+  tokenLabel: 'A' | 'B',
+  coinType: string,
+) => {
+  if (currentAmount !== 0n) {
+    return { amount: currentAmount.toString(), adjusted: false };
+  }
+  if (safeBalance <= 0n) {
+    logger.warn(`Cannot top up token ${tokenLabel} because safe balance is zero`, {
+      coinType,
+    });
+    return { amount: currentAmount.toString(), adjusted: false };
+  }
+  const topUpAmount = safeBalance >= minAmount ? minAmount : safeBalance;
+  return { amount: topUpAmount.toString(), adjusted: true };
 };
 
 /**
@@ -810,6 +832,99 @@ export class RebalanceService {
               );
             }
           }
+        }
+      }
+
+      // If one side remains zero after swap adjustments but the wallet now holds
+      // both tokens, fall back to a small, safe portion of the current balances
+      // so the add-liquidity transaction has non-zero inputs.
+      const amountABigIntCurrent = BigInt(amountA);
+      const amountBBigIntCurrent = BigInt(amountB);
+      const isAmountAZero = amountABigIntCurrent === 0n;
+      const isAmountBZero = amountBBigIntCurrent === 0n;
+
+      if (isAmountAZero || isAmountBZero) {
+        // Re-fetch balances after swaps/removals so we base top-ups on the latest wallet state.
+        let fetchedBalanceA: BalanceResult | undefined;
+        let fetchedBalanceB: BalanceResult | undefined;
+        try {
+          if (isAmountAZero && isAmountBZero) {
+            const [balA, balB] = await Promise.all([
+              suiClient.getBalance({
+                owner: ownerAddress,
+                coinType: poolInfo.coinTypeA,
+              }),
+              suiClient.getBalance({
+                owner: ownerAddress,
+                coinType: poolInfo.coinTypeB,
+              }),
+            ]);
+            fetchedBalanceA = balA;
+            fetchedBalanceB = balB;
+          } else if (isAmountAZero) {
+            fetchedBalanceA = await suiClient.getBalance({
+              owner: ownerAddress,
+              coinType: poolInfo.coinTypeA,
+            });
+          } else if (isAmountBZero) {
+            fetchedBalanceB = await suiClient.getBalance({
+              owner: ownerAddress,
+              coinType: poolInfo.coinTypeB,
+            });
+          }
+        } catch (balanceErr) {
+          logger.warn('Balance fetch for top-up failed; using existing balances', balanceErr);
+        }
+
+        const latestBalanceA = isAmountAZero
+          ? (fetchedBalanceA !== undefined ? fetchedBalanceA : balanceA)
+          : balanceA;
+        const latestBalanceB = isAmountBZero
+          ? (fetchedBalanceB !== undefined ? fetchedBalanceB : balanceB)
+          : balanceB;
+
+        const computeSafeBalance = (balance: BalanceResult, isSui: boolean) => {
+          const total = BigInt(balance.totalBalance);
+          return isSui && total > SUI_GAS_RESERVE
+            ? total - SUI_GAS_RESERVE
+            : total;
+        };
+
+        const latestSafeA = computeSafeBalance(latestBalanceA, isSuiA);
+        const latestSafeB = computeSafeBalance(latestBalanceB, isSuiB);
+
+        // Use only a small portion of the wallet balance to seed the missing side,
+        // capped at the configured default minimum to avoid overspending.
+        const prevAmountA = amountA;
+        const prevAmountB = amountB;
+        const topUpA = getAdjustedAmount(
+          amountABigIntCurrent,
+          latestSafeA,
+          defaultMinAmount,
+          'A',
+          poolInfo.coinTypeA,
+        );
+        amountA = topUpA.amount;
+
+        const topUpB = getAdjustedAmount(
+          amountBBigIntCurrent,
+          latestSafeB,
+          defaultMinAmount,
+          'B',
+          poolInfo.coinTypeB,
+        );
+        amountB = topUpB.amount;
+        const adjusted = topUpA.adjusted || topUpB.adjusted;
+
+        if (adjusted) {
+          logger.info('Adjusted add-liquidity amounts from post-swap balances', {
+            amountA,
+            amountB,
+            prevAmountA,
+            prevAmountB,
+            adjustedA: topUpA.adjusted,
+            adjustedB: topUpB.adjusted,
+          });
         }
       }
 
