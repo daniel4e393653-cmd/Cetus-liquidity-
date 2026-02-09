@@ -1,4 +1,5 @@
 import assert from 'assert';
+import { chooseFixedToken } from '../src/services/rebalance';
 
 /**
  * Tests for the rebalance amount calculation logic.
@@ -190,6 +191,22 @@ function computeRebalanceAmounts(
   assert.strictEqual(amountA, '3000000000', 'use exact removed SUI when within safe balance');
   assert.strictEqual(amountB, '5000000000');
   console.log('✔ SUI removed amount used exactly when within safe balance');
+}
+
+// 15. Fix token choice: use the scarcer token as the fixed side to stay within budget.
+{
+  // Token A is the scarce side, so fixAmountA should be true
+  assert.strictEqual(chooseFixedToken('100', '500'), true, 'fix scarce token A');
+  // Token B scarce → fixAmountA should be false
+  assert.strictEqual(chooseFixedToken('8000', '4000'), false, 'fix scarce token B');
+  // Large realistic amounts (BigInt-safe)
+  assert.strictEqual(chooseFixedToken('1230000000000', '4560000000000'), true, 'fix scarce large token A');
+  assert.strictEqual(chooseFixedToken('9876543210000', '123456789000'), false, 'fix scarce large token B');
+  // Zero-handling branches
+  assert.strictEqual(chooseFixedToken('0', '250'), false, 'when A is zero, fix B');
+  assert.strictEqual(chooseFixedToken('750', '0'), true, 'when B is zero, fix A');
+  assert.throws(() => chooseFixedToken('0', '0'), /both amounts are zero/, 'both zero should throw');
+  console.log('✔ fix token selection uses scarce token as budget anchor');
 }
 
 console.log('\nAll rebalanceAmounts tests passed ✅');
